@@ -1,5 +1,5 @@
 /* ******************************************************************************
- * Copyright (c) 2011-2018 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2019 Google, Inc.  All rights reserved.
  * Copyright (c) 2010 Massachusetts Institute of Technology  All rights reserved.
  * ******************************************************************************/
 
@@ -32,32 +32,32 @@
  */
 
 /* Code Manipulation API Sample:
- * memtrace_simple.c
+ * memtrace_x86.c
  *
- * Collects the memory reference information and dumps it to a file as text.
+ * Collects the instruction address, data address, and size of every
+ * memory reference and dumps the results to a file.
+ * This is an x86-specific implementation of a memory tracing client.
+ * For a simpler (and slower) arch-independent version, please see memtrace_simple.c.
  *
- * (1) It fills a per-thread-buffer with inlined instrumentation.
- * (2) It calls a clean call to dump the buffer into a file.
+ * Illustrates how to create generated code in a local code cache and
+ * perform a lean procedure call to that generated code.
  *
- * The profile consists of list of <type, size, addr> entries representing
- * - mem ref instr: e.g., { type = 42 (call), size = 5, addr = 0x7f59c2d002d3 }
- * - mem ref info:  e.g., { type = 1 (write), size = 8, addr = 0x7ffeacab0ec8 }.
+ * (1) Fills a buffer and dumps the buffer when it is full.
+ * (2) Inlines the buffer filling code to avoid a full context switch.
+ * (3) Uses a lean procedure call for clean calls to reduce code cache size.
  *
- * This sample illustrates
- * - the use of drutil_expand_rep_string() to expand string loops to obtain
- *   every memory reference,
- * - the use of drutil_opnd_mem_size_in_bytes() to obtain the size of OP_enter
- *   memory references,
- * - the use of drutil_insert_get_mem_addr() to insert instructions to compute
- *   the address of each memory reference.
+ * Illustrates the use of drutil_expand_rep_string() to expand string
+ * loops to obtain every memory reference and of
+ * drutil_opnd_mem_size_in_bytes() to obtain the size of OP_enter
+ * memory references.
  *
- * This client is a simple implementation of a memory reference tracing tool
- * without instrumentation optimization.  Additionally, dumping as
- * text is much slower than dumping as binary.  See memtrace_x86.c for
- * a higher-performance sample.
+ * The OUTPUT_TEXT define controls the format of the trace: text or binary.
+ * Creating a text trace file makes the tool an order of magnitude (!) slower
+ * than creating a binary file; thus, the default is binary.
  */
 
 #include <stdio.h>
+#include <string.h> /* for memset */
 #include <stddef.h> /* for offsetof */
 #include "dr_api.h"
 #include "drmgr.h"
@@ -65,308 +65,164 @@
 #include "drutil.h"
 #include "utils.h"
 
-enum {
-    REF_TYPE_READ = 0,
-    REF_TYPE_WRITE = 1,
-};
-/* Each mem_ref_t is a <type, size, addr> entry representing a memory reference
- * instruction or the reference information, e.g.:
- * - mem ref instr: { type = 42 (call), size = 5, addr = 0x7f59c2d002d3 }
- * - mem ref info:  { type = 1 (write), size = 8, addr = 0x7ffeacab0ec8 }
+/* Each mem_ref_t includes the type of reference (read or write),
+ * the address referenced, and the size of the reference.
  */
 typedef struct _mem_ref_t {
-    ushort type; /* r(0), w(1), or opcode (assuming 0/1 are invalid opcode) */
-    ushort size; /* mem ref size or instr length */
-    app_pc addr; /* mem ref addr or instr pc */
+    bool write;
+    void *addr;
+    size_t size;
+    app_pc pc;
 } mem_ref_t;
 
-/* Max number of mem_ref a buffer can have. It should be big enough
- * to hold all entries between clean calls.
+/* Max number of mem_ref a buffer can have */
+#define MAX_NUM_MEM_REFS 8192
+/* The size of memory buffer for holding mem_refs. When it fills up,
+ * we dump data from the buffer to the file.
  */
-#define MAX_NUM_MEM_REFS 4096
-/* The maximum size of buffer for holding mem_refs. */
 #define MEM_BUF_SIZE (sizeof(mem_ref_t) * MAX_NUM_MEM_REFS)
 
 /* thread private log file and counter */
 typedef struct {
-    byte *seg_base;
-    mem_ref_t *buf_base;
+    char *buf_ptr;
+    char *buf_base;
+    /* buf_end holds the negative value of real address of buffer end. */
+    ptr_int_t buf_end;
+    void *cache;
     file_t log;
+#if OUTPUT_TEXT
     FILE *logf;
+#endif
     uint64 num_refs;
-    uint64 num_scatter;
-    uint64 num_gather;
+    long num_scatter;
+    long num_gather;
 } per_thread_t;
 
+static size_t page_size;
 static client_id_t client_id;
-static void *mutex;     /* for multithread support */
-static uint64 num_refs; /* keep a global memory reference count */
-
-/* Allocated TLS slot offsets */
-enum {
-    MEMTRACE_TLS_OFFS_BUF_PTR,
-    MEMTRACE_TLS_COUNT, /* total number of TLS slots allocated */
-};
-static reg_id_t tls_seg;
-static uint tls_offs;
-static int tls_idx;
-
-static uint64 global_num_scatter;
-static uint64 global_num_gather;
-
-#define TLS_SLOT(tls_base, enum_val) (void **)((byte *)(tls_base) + tls_offs + (enum_val))
-#define BUF_PTR(tls_base) *(mem_ref_t **)TLS_SLOT(tls_base, MEMTRACE_TLS_OFFS_BUF_PTR)
-
-#define MINSERT instrlist_meta_preinsert
+static app_pc code_cache;
+static void *mutex;            /* for multithread support */
+static uint64 global_num_refs; /* keep a global memory reference count */
+static int tls_index;
+static long global_num_scatter;
+static long global_num_gather;
 
 static void
-memtrace(void *drcontext)
-{
-    per_thread_t *data;
-    mem_ref_t *mem_ref, *buf_ptr;
-
-    data = drmgr_get_tls_field(drcontext, tls_idx);
-    buf_ptr = BUF_PTR(data->seg_base);
-    /* Example of dumpped file content:
-     *   0x00007f59c2d002d3:  5, call
-     *   0x00007ffeacab0ec8:  8, w
-     */
-    /* We use libc's fprintf as it is buffered and much faster than dr_fprintf
-     * for repeated printing that dominates performance, as the printing does here.
-     */
-    for (mem_ref = (mem_ref_t *)data->buf_base; mem_ref < buf_ptr; mem_ref++) {
-        /* We use PIFX to avoid leading zeroes and shrink the resulting file. */
-        fprintf(data->logf, "" PIFX ": %2d, %s\n", (ptr_uint_t)mem_ref->addr,
-                mem_ref->size,
-                (mem_ref->type > REF_TYPE_WRITE)
-                    ? decode_opcode_name(mem_ref->type) /* opcode for instr */
-                    : (mem_ref->type == REF_TYPE_WRITE ? "w" : "r"));
-        data->num_refs++;
-    }
-    BUF_PTR(data->seg_base) = data->buf_base;
-}
-
-/* clean_call dumps the memory reference info to the log file */
+event_exit(void);
 static void
-clean_call(void)
-{
-    void *drcontext = dr_get_current_drcontext();
-    memtrace(drcontext);
-}
-
+event_thread_init(void *drcontext);
 static void
-insert_load_buf_ptr(void *drcontext, instrlist_t *ilist, instr_t *where, reg_id_t reg_ptr)
-{
-    dr_insert_read_raw_tls(drcontext, ilist, where, tls_seg,
-                           tls_offs + MEMTRACE_TLS_OFFS_BUF_PTR, reg_ptr);
-}
-
-static void
-insert_update_buf_ptr(void *drcontext, instrlist_t *ilist, instr_t *where,
-                      reg_id_t reg_ptr, int adjust)
-{
-    MINSERT(
-        ilist, where,
-        XINST_CREATE_add(drcontext, opnd_create_reg(reg_ptr), OPND_CREATE_INT16(adjust)));
-    dr_insert_write_raw_tls(drcontext, ilist, where, tls_seg,
-                            tls_offs + MEMTRACE_TLS_OFFS_BUF_PTR, reg_ptr);
-}
-
-static void
-insert_save_type(void *drcontext, instrlist_t *ilist, instr_t *where, reg_id_t base,
-                 reg_id_t scratch, ushort type)
-{
-    scratch = reg_resize_to_opsz(scratch, OPSZ_2);
-    MINSERT(ilist, where,
-            XINST_CREATE_load_int(drcontext, opnd_create_reg(scratch),
-                                  OPND_CREATE_INT16(type)));
-    MINSERT(ilist, where,
-            XINST_CREATE_store_2bytes(drcontext,
-                                      OPND_CREATE_MEM16(base, offsetof(mem_ref_t, type)),
-                                      opnd_create_reg(scratch)));
-}
-
-static void
-insert_save_size(void *drcontext, instrlist_t *ilist, instr_t *where, reg_id_t base,
-                 reg_id_t scratch, ushort size)
-{
-    scratch = reg_resize_to_opsz(scratch, OPSZ_2);
-    MINSERT(ilist, where,
-            XINST_CREATE_load_int(drcontext, opnd_create_reg(scratch),
-                                  OPND_CREATE_INT16(size)));
-    MINSERT(ilist, where,
-            XINST_CREATE_store_2bytes(drcontext,
-                                      OPND_CREATE_MEM16(base, offsetof(mem_ref_t, size)),
-                                      opnd_create_reg(scratch)));
-}
-
-static void
-insert_save_pc(void *drcontext, instrlist_t *ilist, instr_t *where, reg_id_t base,
-               reg_id_t scratch, app_pc pc)
-{
-    instrlist_insert_mov_immed_ptrsz(drcontext, (ptr_int_t)pc, opnd_create_reg(scratch),
-                                     ilist, where, NULL, NULL);
-    MINSERT(ilist, where,
-            XINST_CREATE_store(drcontext,
-                               OPND_CREATE_MEMPTR(base, offsetof(mem_ref_t, addr)),
-                               opnd_create_reg(scratch)));
-}
-
-static void
-insert_save_addr(void *drcontext, instrlist_t *ilist, instr_t *where, opnd_t ref,
-                 reg_id_t reg_ptr, reg_id_t reg_addr)
-{
-    bool ok;
-    /* we use reg_ptr as scratch to get addr */
-    ok = drutil_insert_get_mem_addr(drcontext, ilist, where, ref, reg_addr, reg_ptr);
-    DR_ASSERT(ok);
-    insert_load_buf_ptr(drcontext, ilist, where, reg_ptr);
-    MINSERT(ilist, where,
-            XINST_CREATE_store(drcontext,
-                               OPND_CREATE_MEMPTR(reg_ptr, offsetof(mem_ref_t, addr)),
-                               opnd_create_reg(reg_addr)));
-}
-
-/* insert inline code to add an instruction entry into the buffer */
-static void
-instrument_instr(void *drcontext, instrlist_t *ilist, instr_t *where)
-{
-    /* We need two scratch registers */
-    reg_id_t reg_ptr, reg_tmp;
-    /* we don't want to predicate this, because an instruction fetch always occurs */
-    instrlist_set_auto_predicate(ilist, DR_PRED_NONE);
-    if (drreg_reserve_register(drcontext, ilist, where, NULL, &reg_ptr) !=
-            DRREG_SUCCESS ||
-        drreg_reserve_register(drcontext, ilist, where, NULL, &reg_tmp) !=
-            DRREG_SUCCESS) {
-        DR_ASSERT(false); /* cannot recover */
-        return;
-    }
-    insert_load_buf_ptr(drcontext, ilist, where, reg_ptr);
-    insert_save_type(drcontext, ilist, where, reg_ptr, reg_tmp,
-                     (ushort)instr_get_opcode(where));
-    insert_save_size(drcontext, ilist, where, reg_ptr, reg_tmp,
-                     (ushort)instr_length(drcontext, where));
-    insert_save_pc(drcontext, ilist, where, reg_ptr, reg_tmp, instr_get_app_pc(where));
-    insert_update_buf_ptr(drcontext, ilist, where, reg_ptr, sizeof(mem_ref_t));
-    /* Restore scratch registers */
-    if (drreg_unreserve_register(drcontext, ilist, where, reg_ptr) != DRREG_SUCCESS ||
-        drreg_unreserve_register(drcontext, ilist, where, reg_tmp) != DRREG_SUCCESS)
-        DR_ASSERT(false);
-    instrlist_set_auto_predicate(ilist, instr_get_predicate(where));
-}
-
-/* insert inline code to add a memory reference info entry into the buffer */
-static void
-instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, opnd_t ref,
-               bool write)
-{
-    /* We need two scratch registers */
-    reg_id_t reg_ptr, reg_tmp;
-    if (drreg_reserve_register(drcontext, ilist, where, NULL, &reg_ptr) !=
-            DRREG_SUCCESS ||
-        drreg_reserve_register(drcontext, ilist, where, NULL, &reg_tmp) !=
-            DRREG_SUCCESS) {
-        DR_ASSERT(false); /* cannot recover */
-        return;
-    }
-    /* save_addr should be called first as reg_ptr or reg_tmp maybe used in ref */
-    insert_save_addr(drcontext, ilist, where, ref, reg_ptr, reg_tmp);
-    insert_save_type(drcontext, ilist, where, reg_ptr, reg_tmp,
-                     write ? REF_TYPE_WRITE : REF_TYPE_READ);
-    insert_save_size(drcontext, ilist, where, reg_ptr, reg_tmp,
-                     (ushort)drutil_opnd_mem_size_in_bytes(ref, where));
-    insert_update_buf_ptr(drcontext, ilist, where, reg_ptr, sizeof(mem_ref_t));
-    /* Restore scratch registers */
-    if (drreg_unreserve_register(drcontext, ilist, where, reg_ptr) != DRREG_SUCCESS ||
-        drreg_unreserve_register(drcontext, ilist, where, reg_tmp) != DRREG_SUCCESS)
-        DR_ASSERT(false);
-}
-
-/* For each memory reference app instr, we insert inline code to fill the buffer
- * with an instruction entry and memory reference entries.
- */
-static dr_emit_flags_t
-event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
-                      bool for_trace, bool translating, void *user_data)
-{
-
-    int i;
-
-    if (!instr_is_app(instr))
-        return DR_EMIT_DEFAULT;
-    if (!instr_reads_memory(instr) && !instr_writes_memory(instr))
-        return DR_EMIT_DEFAULT;
-
-    /* insert code to add an entry for app instruction */
-    instrument_instr(drcontext, bb, instr);
-
-    /* insert code to add an entry for each memory reference opnd */
-    for (i = 0; i < instr_num_srcs(instr); i++) {
-        if (opnd_is_memory_reference(instr_get_src(instr, i)))
-            instrument_mem(drcontext, bb, instr, instr_get_src(instr, i), false);
-    }
-
-    for (i = 0; i < instr_num_dsts(instr); i++) {
-        if (opnd_is_memory_reference(instr_get_dst(instr, i)))
-            instrument_mem(drcontext, bb, instr, instr_get_dst(instr, i), true);
-    }
-
-    /* insert code to call clean_call for processing the buffer */
-    if (/* XXX i#1698: there are constraints for code between ldrex/strex pairs,
-         * so we minimize the instrumentation in between by skipping the clean call.
-         * As we're only inserting instrumentation on a memory reference, and the
-         * app should be avoiding memory accesses in between the ldrex...strex,
-         * the only problematic point should be before the strex.
-         * However, there is still a chance that the instrumentation code may clear the
-         * exclusive monitor state.
-         * Using a fault to handle a full buffer should be more robust, and the
-         * forthcoming buffer filling API (i#513) will provide that.
-         */
-        IF_AARCHXX_ELSE(!instr_is_exclusive_store(instr), true))
-        dr_insert_clean_call(drcontext, bb, instr, (void *)clean_call, false, 0);
-
-    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_idx);
-    if (instr_is_scatter(instr)) {
-        data->num_scatter++;
-    }
-    if (instr_is_gather(instr)) {
-        data->num_gather++;
-    }
-    return DR_EMIT_DEFAULT;
-}
-
-/* We transform string loops into regular loops so we can more easily
- * monitor every memory reference they make.
- */
+event_thread_exit(void *drcontext);
 static dr_emit_flags_t
 event_bb_app2app(void *drcontext, void *tag, instrlist_t *bb, bool for_trace,
-                 bool translating)
+                 bool translating);
+
+static dr_emit_flags_t
+event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
+                bool for_trace, bool translating, void *user_data);
+
+static void
+clean_call(void);
+static void
+memtrace(void *drcontext);
+static void
+code_cache_init(void);
+static void
+code_cache_exit(void);
+static void
+instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, int pos, bool write);
+
+DR_EXPORT void
+dr_client_main(client_id_t id, int argc, const char *argv[])
 {
-    if (!drutil_expand_rep_string(drcontext, bb)) {
+    /* We need 2 reg slots beyond drreg's eflags slots => 3 slots */
+    drreg_options_t ops = { sizeof(ops), 3, false };
+    /* Specify priority relative to other instrumentation operations: */
+    drmgr_priority_t priority = { sizeof(priority), /* size of struct */
+                                  "memtrace",       /* name of our operation */
+                                  NULL, /* optional name of operation we should precede */
+                                  NULL, /* optional name of operation we should follow */
+                                  0 };  /* numeric priority */
+    dr_set_client_name("DynamoRIO Sample Client 'memtrace'",
+                       "http://dynamorio.org/issues");
+    page_size = dr_page_size();
+    drmgr_init();
+    drutil_init();
+    client_id = id;
+    mutex = dr_mutex_create();
+    dr_register_exit_event(event_exit);
+    if (!drmgr_register_thread_init_event(event_thread_init) ||
+        !drmgr_register_thread_exit_event(event_thread_exit) ||
+        !drmgr_register_bb_app2app_event(event_bb_app2app, &priority) ||
+        !drmgr_register_bb_instrumentation_event(NULL, event_bb_insert, &priority) ||
+        drreg_init(&ops) != DRREG_SUCCESS) {
+        /* something is wrong: can't continue */
         DR_ASSERT(false);
-        /* in release build, carry on: we'll just miss per-iter refs */
+        return;
     }
-    return DR_EMIT_DEFAULT;
+    tls_index = drmgr_register_tls_field();
+    DR_ASSERT(tls_index != -1);
+
+    code_cache_init();
+    /* make it easy to tell, by looking at log file, which client executed */
+    dr_log(NULL, DR_LOG_ALL, 1, "Client 'memtrace' initializing\n");
+#ifdef SHOW_RESULTS
+    if (dr_is_notify_on()) {
+#    ifdef WINDOWS
+        /* ask for best-effort printing to cmd window.  must be called at init. */
+        dr_enable_console_printing();
+#    endif
+        dr_fprintf(STDERR, "Client memtrace is running\n");
+    }
+#endif
 }
+
+static void
+event_exit()
+{
+#ifdef SHOW_RESULTS
+    char msg[512];
+    int len;
+    len = dr_snprintf(msg, sizeof(msg) / sizeof(msg[0]),
+                      "Instrumentation results:\n"
+                      "  saw %llu memory references\n",
+                      global_num_refs);
+    DR_ASSERT(len > 0);
+    NULL_TERMINATE_BUFFER(msg);
+    DISPLAY_STRING(msg);
+#endif /* SHOW_RESULTS */
+    code_cache_exit();
+
+    if (!drmgr_unregister_tls_field(tls_index) ||
+        !drmgr_unregister_thread_init_event(event_thread_init) ||
+        !drmgr_unregister_thread_exit_event(event_thread_exit) ||
+        !drmgr_unregister_bb_insertion_event(event_bb_insert) ||
+        drreg_exit() != DRREG_SUCCESS)
+        DR_ASSERT(false);
+
+    dr_mutex_destroy(mutex);
+    drutil_exit();
+    drmgr_exit();
+}
+
+#ifdef WINDOWS
+#    define IF_WINDOWS(x) x
+#else
+#    define IF_WINDOWS(x) /* nothing */
+#endif
 
 static void
 event_thread_init(void *drcontext)
 {
-    per_thread_t *data = dr_thread_alloc(drcontext, sizeof(per_thread_t));
-    DR_ASSERT(data != NULL);
-    drmgr_set_tls_field(drcontext, tls_idx, data);
+    per_thread_t *data;
 
-    /* Keep seg_base in a per-thread data structure so we can get the TLS
-     * slot and find where the pointer points to in the buffer.
-     */
-    data->seg_base = dr_get_dr_segment_base(tls_seg);
-    data->buf_base =
-        dr_raw_mem_alloc(MEM_BUF_SIZE, DR_MEMPROT_READ | DR_MEMPROT_WRITE, NULL);
-    DR_ASSERT(data->seg_base != NULL && data->buf_base != NULL);
-    /* put buf_base to TLS as starting buf_ptr */
-    BUF_PTR(data->seg_base) = data->buf_base;
-
+    /* allocate thread private data */
+    data = dr_thread_alloc(drcontext, sizeof(per_thread_t));
+    drmgr_set_tls_field(drcontext, tls_index, data);
+    data->buf_base = dr_thread_alloc(drcontext, MEM_BUF_SIZE);
+    data->buf_ptr = data->buf_base;
+    /* set buf_end to be negative of address of buffer end for the lea later */
+    data->buf_end = -(ptr_int_t)(data->buf_base + MEM_BUF_SIZE);
     data->num_refs = 0;
 
     /* We're going to dump our data to a per-thread file.
@@ -380,80 +236,294 @@ event_thread_init(void *drcontext)
                       DR_FILE_CLOSE_ON_FORK |
 #endif
                           DR_FILE_ALLOW_LARGE);
+#if OUTPUT_TEXT
     data->logf = log_stream_from_file(data->log);
-    fprintf(data->logf, "Format: <data address>: <data size>, <(r)ead/(w)rite/opcode>\n");
+    fprintf(data->logf,
+            "Format: <instr address>,<(r)ead/(w)rite>,<data size>,<data address>\n");
+#endif
 }
 
 static void
 event_thread_exit(void *drcontext)
 {
     per_thread_t *data;
-    memtrace(drcontext); /* dump any remaining buffer entries */
-    data = drmgr_get_tls_field(drcontext, tls_idx);
-    dr_mutex_lock(mutex);
-    num_refs += data->num_refs;
-    global_num_scatter += data->num_scatter;
-    global_num_gather += data->num_gather;
-    dr_mutex_unlock(mutex);
-    log_stream_close(data->logf); /* closes fd too */
-    dr_raw_mem_free(data->buf_base, MEM_BUF_SIZE);
-    dr_thread_free(drcontext, data, sizeof(per_thread_t));
 
+    memtrace(drcontext);
+    data = drmgr_get_tls_field(drcontext, tls_index);
+    dr_mutex_lock(mutex);
+    global_num_refs += data->num_refs;
+    dr_mutex_unlock(mutex);
+#ifdef OUTPUT_TEXT
+    log_stream_close(data->logf); /* closes fd too */
+#else
+    log_file_close(data->log);
+#endif
+    dr_thread_free(drcontext, data->buf_base, MEM_BUF_SIZE);
+    dr_thread_free(drcontext, data, sizeof(per_thread_t));
+}
+
+/* we transform string loops into regular loops so we can more easily
+ * monitor every memory reference they make
+ */
+static dr_emit_flags_t
+event_bb_app2app(void *drcontext, void *tag, instrlist_t *bb, bool for_trace,
+                 bool translating)
+{
+    if (!drutil_expand_rep_string(drcontext, bb)) {
+        DR_ASSERT(false);
+        /* in release build, carry on: we'll just miss per-iter refs */
+    }
+    return DR_EMIT_DEFAULT;
+}
+
+/* event_bb_insert calls instrument_mem to instrument every
+ * application memory reference.
+ */
+static dr_emit_flags_t
+event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
+                bool for_trace, bool translating, void *user_data)
+{
+    int i;
+    if (instr_get_app_pc(instr) == NULL)
+        return DR_EMIT_DEFAULT;
+    if (instr_reads_memory(instr)) {
+        for (i = 0; i < instr_num_srcs(instr); i++) {
+            if (opnd_is_memory_reference(instr_get_src(instr, i))) {
+                instrument_mem(drcontext, bb, instr, i, false);
+            }
+        }
+    }
+    if (instr_writes_memory(instr)) {
+        for (i = 0; i < instr_num_dsts(instr); i++) {
+            if (opnd_is_memory_reference(instr_get_dst(instr, i))) {
+                instrument_mem(drcontext, bb, instr, i, true);
+            }
+        }
+    }
+    return DR_EMIT_DEFAULT;
 }
 
 static void
-event_exit(void)
+memtrace(void *drcontext)
 {
-    dr_log(NULL, DR_LOG_ALL, 1, "Client 'memtrace' num refs seen: " SZFMT "\n", num_refs);
-    printf("Client 'memtrace' num scatter seen: %ld\n", global_num_scatter);
-    printf("Client 'memtrace' num gather seen: %ld\n", global_num_gather);
-    if (!dr_raw_tls_cfree(tls_offs, MEMTRACE_TLS_COUNT))
-        DR_ASSERT(false);
+    per_thread_t *data;
+    int num_refs;
+    mem_ref_t *mem_ref;
+#ifdef OUTPUT_TEXT
+    int i;
+#endif
 
-    if (!drmgr_unregister_tls_field(tls_idx) ||
-        !drmgr_unregister_thread_init_event(event_thread_init) ||
-        !drmgr_unregister_thread_exit_event(event_thread_exit) ||
-        !drmgr_unregister_bb_app2app_event(event_bb_app2app) ||
-        !drmgr_unregister_bb_insertion_event(event_app_instruction) ||
-        drreg_exit() != DRREG_SUCCESS)
-        DR_ASSERT(false);
+    data = drmgr_get_tls_field(drcontext, tls_index);
+    mem_ref = (mem_ref_t *)data->buf_base;
+    num_refs = (int)((mem_ref_t *)data->buf_ptr - mem_ref);
 
-    dr_mutex_destroy(mutex);
-    drutil_exit();
-    drmgr_exit();
-}
-
-DR_EXPORT void
-dr_client_main(client_id_t id, int argc, const char *argv[])
-{
-    /* We need 2 reg slots beyond drreg's eflags slots => 3 slots */
-    drreg_options_t ops = { sizeof(ops), 3, false };
-    dr_set_client_name("DynamoRIO Sample Client 'memtrace'",
-                       "http://dynamorio.org/issues");
-    if (!drmgr_init() || drreg_init(&ops) != DRREG_SUCCESS || !drutil_init())
-        DR_ASSERT(false);
-
-    /* register events */
-    dr_register_exit_event(event_exit);
-    if (!drmgr_register_thread_init_event(event_thread_init) ||
-        !drmgr_register_thread_exit_event(event_thread_exit) ||
-        !drmgr_register_bb_app2app_event(event_bb_app2app, NULL) ||
-        !drmgr_register_bb_instrumentation_event(NULL /*analysis_func*/,
-                                                 event_app_instruction, NULL))
-        DR_ASSERT(false);
-
-    client_id = id;
-    mutex = dr_mutex_create();
-
-    tls_idx = drmgr_register_tls_field();
-    DR_ASSERT(tls_idx != -1);
-    /* The TLS field provided by DR cannot be directly accessed from the code cache.
-     * For better performance, we allocate raw TLS so that we can directly
-     * access and update it with a single instruction.
+#ifdef OUTPUT_TEXT
+    /* We use libc's fprintf as it is buffered and much faster than dr_fprintf
+     * for repeated printing that dominates performance, as the printing does here.
      */
-    if (!dr_raw_tls_calloc(&tls_seg, &tls_offs, MEMTRACE_TLS_COUNT, 0))
-        DR_ASSERT(false);
+    for (i = 0; i < num_refs; i++) {
+        /* We use PIFX to avoid leading zeroes and shrink the resulting file. */
+        fprintf(data->logf, PIFX ",%c,%d," PIFX "\n", (ptr_uint_t)mem_ref->pc,
+                mem_ref->write ? 'w' : 'r', (int)mem_ref->size,
+                (ptr_uint_t)mem_ref->addr);
+        ++mem_ref;
+    }
+#else
+    dr_write_file(data->log, data->buf_base, (size_t)(data->buf_ptr - data->buf_base));
+#endif
 
-    /* make it easy to tell, by looking at log file, which client executed */
-    dr_log(NULL, DR_LOG_ALL, 1, "Client 'memtrace' initializing\n");
+    memset(data->buf_base, 0, MEM_BUF_SIZE);
+    data->num_refs += num_refs;
+    data->buf_ptr = data->buf_base;
 }
+
+/* clean_call dumps the memory reference info to the log file */
+static void
+clean_call(void)
+{
+    void *drcontext = dr_get_current_drcontext();
+    memtrace(drcontext);
+}
+
+static void
+code_cache_init(void)
+{
+    void *drcontext;
+    instrlist_t *ilist;
+    instr_t *where;
+    byte *end;
+
+    drcontext = dr_get_current_drcontext();
+    code_cache =
+        dr_nonheap_alloc(page_size, DR_MEMPROT_READ | DR_MEMPROT_WRITE | DR_MEMPROT_EXEC);
+    ilist = instrlist_create(drcontext);
+    /* The lean procedure simply performs a clean call, and then jumps back
+     * to the DR code cache.
+     */
+    where = INSTR_CREATE_jmp_ind(drcontext, opnd_create_reg(DR_REG_XCX));
+    instrlist_meta_append(ilist, where);
+    /* clean call */
+    dr_insert_clean_call(drcontext, ilist, where, (void *)clean_call, false, 0);
+    /* Encodes the instructions into memory and then cleans up. */
+    end = instrlist_encode(drcontext, ilist, code_cache, false);
+    DR_ASSERT((size_t)(end - code_cache) < page_size);
+    instrlist_clear_and_destroy(drcontext, ilist);
+    /* set the memory as just +rx now */
+    dr_memory_protect(code_cache, page_size, DR_MEMPROT_READ | DR_MEMPROT_EXEC);
+}
+
+static void
+code_cache_exit(void)
+{
+    dr_nonheap_free(code_cache, page_size);
+}
+
+/*
+ * instrument_mem is called whenever a memory reference is identified.
+ * It inserts code before the memory reference to to fill the memory buffer
+ * and jump to our own code cache to call the clean_call when the buffer is full.
+ */
+static void
+instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, int pos, bool write)
+{
+    instr_t *instr, *call, *restore;
+    opnd_t ref, opnd1, opnd2;
+    reg_id_t reg1, reg2;
+    drvector_t allowed;
+    per_thread_t *data;
+    app_pc pc;
+
+    data = drmgr_get_tls_field(drcontext, tls_index);
+
+    /* Steal two scratch registers.
+     * reg2 must be ECX or RCX for jecxz.
+     */
+    drreg_init_and_fill_vector(&allowed, false);
+    drreg_set_vector_entry(&allowed, DR_REG_XCX, true);
+    if (drreg_reserve_register(drcontext, ilist, where, &allowed, &reg2) !=
+            DRREG_SUCCESS ||
+        drreg_reserve_register(drcontext, ilist, where, NULL, &reg1) != DRREG_SUCCESS) {
+        DR_ASSERT(false); /* cannot recover */
+        drvector_delete(&allowed);
+        return;
+    }
+    drvector_delete(&allowed);
+
+    if (write)
+        ref = instr_get_dst(where, pos);
+    else
+        ref = instr_get_src(where, pos);
+
+    /* use drutil to get mem address */
+    drutil_insert_get_mem_addr(drcontext, ilist, where, ref, reg1, reg2);
+
+    /* The following assembly performs the following instructions
+     * buf_ptr->write = write;
+     * buf_ptr->addr  = addr;
+     * buf_ptr->size  = size;
+     * buf_ptr->pc    = pc;
+     * buf_ptr++;
+     * if (buf_ptr >= buf_end_ptr)
+     *    clean_call();
+     */
+    drmgr_insert_read_tls_field(drcontext, tls_index, ilist, where, reg2);
+    /* Load data->buf_ptr into reg2 */
+    opnd1 = opnd_create_reg(reg2);
+    opnd2 = OPND_CREATE_MEMPTR(reg2, offsetof(per_thread_t, buf_ptr));
+    instr = INSTR_CREATE_mov_ld(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    /* Move write/read to write field */
+    opnd1 = OPND_CREATE_MEM32(reg2, offsetof(mem_ref_t, write));
+    opnd2 = OPND_CREATE_INT32(write);
+    instr = INSTR_CREATE_mov_imm(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    /* Store address in memory ref */
+    opnd1 = OPND_CREATE_MEMPTR(reg2, offsetof(mem_ref_t, addr));
+    opnd2 = opnd_create_reg(reg1);
+    instr = INSTR_CREATE_mov_st(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    /* Store size in memory ref */
+    opnd1 = OPND_CREATE_MEMPTR(reg2, offsetof(mem_ref_t, size));
+    /* drutil_opnd_mem_size_in_bytes handles OP_enter */
+    opnd2 = OPND_CREATE_INT32(drutil_opnd_mem_size_in_bytes(ref, where));
+    instr = INSTR_CREATE_mov_st(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    /* Store pc in memory ref */
+    pc = instr_get_app_pc(where);
+    /* For 64-bit, we can't use a 64-bit immediate so we split pc into two halves.
+     * We could alternatively load it into reg1 and then store reg1.
+     * We use a convenience routine that does the two-step store for us.
+     */
+    opnd1 = OPND_CREATE_MEMPTR(reg2, offsetof(mem_ref_t, pc));
+    instrlist_insert_mov_immed_ptrsz(drcontext, (ptr_int_t)pc, opnd1, ilist, where, NULL,
+                                     NULL);
+
+    /* Increment reg value by pointer size using lea instr */
+    opnd1 = opnd_create_reg(reg2);
+    opnd2 = opnd_create_base_disp(reg2, DR_REG_NULL, 0, sizeof(mem_ref_t), OPSZ_lea);
+    instr = INSTR_CREATE_lea(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    /* Update the data->buf_ptr */
+    drmgr_insert_read_tls_field(drcontext, tls_index, ilist, where, reg1);
+    opnd1 = OPND_CREATE_MEMPTR(reg1, offsetof(per_thread_t, buf_ptr));
+    opnd2 = opnd_create_reg(reg2);
+    instr = INSTR_CREATE_mov_st(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    /* we use lea + jecxz trick for better performance
+     * lea and jecxz won't disturb the eflags, so we won't insert
+     * code to save and restore application's eflags.
+     */
+    /* lea [reg2 - buf_end] => reg2 */
+    opnd1 = opnd_create_reg(reg1);
+    opnd2 = OPND_CREATE_MEMPTR(reg1, offsetof(per_thread_t, buf_end));
+    instr = INSTR_CREATE_mov_ld(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+    opnd1 = opnd_create_reg(reg2);
+    opnd2 = opnd_create_base_disp(reg1, reg2, 1, 0, OPSZ_lea);
+    instr = INSTR_CREATE_lea(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    /* jecxz call */
+    call = INSTR_CREATE_label(drcontext);
+    opnd1 = opnd_create_instr(call);
+    instr = INSTR_CREATE_jecxz(drcontext, opnd1);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    /* jump restore to skip clean call */
+    restore = INSTR_CREATE_label(drcontext);
+    opnd1 = opnd_create_instr(restore);
+    instr = INSTR_CREATE_jmp(drcontext, opnd1);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    /* clean call */
+    /* We jump to lean procedure which performs full context switch and
+     * clean call invocation. This is to reduce the code cache size.
+     */
+    instrlist_meta_preinsert(ilist, where, call);
+    /* mov restore DR_REG_XCX */
+    opnd1 = opnd_create_reg(reg2);
+    /* this is the return address for jumping back from lean procedure */
+    opnd2 = opnd_create_instr(restore);
+    /* We could use instrlist_insert_mov_instr_addr(), but with a register
+     * destination we know we can use a 64-bit immediate.
+     */
+    instr = INSTR_CREATE_mov_imm(drcontext, opnd1, opnd2);
+    instrlist_meta_preinsert(ilist, where, instr);
+    /* jmp code_cache */
+    opnd1 = opnd_create_pc(code_cache);
+    instr = INSTR_CREATE_jmp(drcontext, opnd1);
+    instrlist_meta_preinsert(ilist, where, instr);
+
+    /* Restore scratch registers */
+    instrlist_meta_preinsert(ilist, where, restore);
+    if (drreg_unreserve_register(drcontext, ilist, where, reg1) != DRREG_SUCCESS ||
+        drreg_unreserve_register(drcontext, ilist, where, reg2) != DRREG_SUCCESS)
+        DR_ASSERT(false);
+}
+
