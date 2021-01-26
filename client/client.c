@@ -96,6 +96,7 @@ typedef struct {
     uint64 num_refs;
     long num_scatter;
     long num_gather;
+    long opcode_count[2048];
 } per_thread_t;
 
 static size_t page_size;
@@ -106,6 +107,8 @@ static uint64 global_num_refs; /* keep a global memory reference count */
 static int tls_index;
 static long global_num_scatter;
 static long global_num_gather;
+
+static long global_opcode_count[2048];
 
 static void
 event_exit(void);
@@ -180,6 +183,12 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
 static void
 event_exit()
 {
+	printf("saw %ld scatters and %ld gathers\n", global_num_scatter, global_num_gather);
+	for (int i = 0; i < 2048; i++) {
+		if (global_opcode_count[i] > 0) {
+			printf("%d: %ld\n", i, global_opcode_count[i]);
+		}
+	}
 #ifdef SHOW_RESULTS
     char msg[512];
     int len;
@@ -224,6 +233,11 @@ event_thread_init(void *drcontext)
     /* set buf_end to be negative of address of buffer end for the lea later */
     data->buf_end = -(ptr_int_t)(data->buf_base + MEM_BUF_SIZE);
     data->num_refs = 0;
+    data->num_scatter = 0;
+    data->num_gather = 0;
+    for (int i = 0; i < 2048; i++) {
+    	data->opcode_count[i] = 0;
+    }
 
     /* We're going to dump our data to a per-thread file.
      * On Windows we need an absolute path so we place it in
@@ -252,6 +266,12 @@ event_thread_exit(void *drcontext)
     data = drmgr_get_tls_field(drcontext, tls_index);
     dr_mutex_lock(mutex);
     global_num_refs += data->num_refs;
+    global_num_scatter += data->num_scatter;
+    global_num_gather += data->num_gather;
+    for (int i = 0; i < 2048; i++) {
+    	global_opcode_count[i] += data->opcode_count[i];
+    }    
+    
     dr_mutex_unlock(mutex);
 #ifdef OUTPUT_TEXT
     log_stream_close(data->logf); /* closes fd too */
@@ -283,6 +303,16 @@ static dr_emit_flags_t
 event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
                 bool for_trace, bool translating, void *user_data)
 {
+//	printf("opcode: %d\n", instr_get_opcode(instr));
+    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_index);
+//    if (instr_is_scatter(instr)) {
+//	data->num_scatter++;
+//    }
+//    if (instr_is_gather(instr)) {
+//    	data->num_gather++;
+//    }
+    data->opcode_count[instr_get_opcode(instr)]++;
+
     int i;
     if (instr_get_app_pc(instr) == NULL)
         return DR_EMIT_DEFAULT;
