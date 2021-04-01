@@ -80,7 +80,7 @@ static uint count[NUM_ISA_MODE][OP_LAST + 1];
  * buffer (char msg[NUM_COUNT_SHOW*80]) in event_exit() overflowing the stack.
  * It won't work on Windows either if the output is too large.
  */
-#define NUM_COUNT_SHOW 60
+#define NUM_COUNT_SHOW 15
 
 static void
 event_exit(void);

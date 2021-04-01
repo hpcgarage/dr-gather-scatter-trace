@@ -2,5 +2,5 @@ cd ~/trace_analysis/client
 rm -rf build
 mkdir build
 cd build
-cmake ..
+cmake -DDynamoRIO_DIR=~/dynamorio/build/cmake/ ..
 make
