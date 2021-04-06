@@ -43,7 +43,7 @@
 
 #include "detach_state_shared.h" /* for NUM_{SIMD,OPMASK}_REGS */
 
-#define VERBOSE 0
+//#define VERBOSE 0
 
 #endif /* _AVX512CTX_SHARED_H_ */
 

@@ -3,7 +3,7 @@ CMAKE_MINIMUM_REQUIRED (VERSION 3.10 FATAL_ERROR)
 
 project(count_client)
 
-add_definitions(-DUNIX -DX86_64 -DSHOW_RESULTS -DDEBUG -D__AVX512F__)
+add_definitions(-DUNIX -DX86_64 -DSHOW_RESULTS -DDEBUG -D__AVX512F__ -DVERBOSE)
 
 find_package(DynamoRIO)
 if (NOT DynamoRIO_FOUND)
