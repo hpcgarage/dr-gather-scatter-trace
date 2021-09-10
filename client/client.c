@@ -80,6 +80,8 @@ enum {
     #define NUM_AVX512_REGS 8
 #endif
 
+#define NUM_K_REGS 8
+
 static uint count[NUM_ISA_MODE][OP_LAST + 1];
 #define NUM_COUNT sizeof(count[0]) / sizeof(count[0][0])
 /* We only display the top 15 counts.  This sample could be extended to
@@ -362,7 +364,7 @@ static void read_avx512_regs(dr_mcontext_t *mcontext, avx512_reg_t regno_group) 
     #define MAX_REG_SZ 64
     
     //if buffer remains 0xabababababab... after register value then reading probably failed
-    byte reg_buf[NUM_SIMD_REGS * MAX_REG_SZ]; // for simplicity, we allocate MAX_REG_SZ for each register, even if the register size is smaller
+    byte reg_buf[NUM_AVX512_REGS * MAX_REG_SZ]; // for simplicity, we allocate MAX_REG_SZ for each register, even if the register size is smaller
     memset(reg_buf, 0xab, sizeof(reg_buf)); 
 
     bool get_reg_value_ok = true;
@@ -374,17 +376,148 @@ static void read_avx512_regs(dr_mcontext_t *mcontext, avx512_reg_t regno_group) 
         dr_fprintf(STDERR, "ERROR: problem reading %s value\n", regno_group_str);
     } else {
         int reg_off = 0;
-        for (int i = 0; i < NUM_SIMD_REGS; ++i, reg_off += MAX_REG_SZ) {
+        for (int i = 0; i < NUM_AVX512_REGS; ++i, reg_off += MAX_REG_SZ) {
             // loop through and check if any nonzero value. if so, print out the buf
+            bool is_nonzero = false;
             for (int j = reg_off; j < reg_off + reg_sz; ++j) {
                 if (reg_buf[j]) {
-                    dr_fprintf(STDERR, "got %s[%d]:\n", regno_group_str, i);
-                    for (int k = reg_off; k < reg_off + reg_sz; ++k) {
-                        dr_fprintf(STDERR, "%02x", reg_buf[k]);
-                    }
-                    dr_fprintf(STDERR, "\n");
-                    break;
+                    is_nonzero = true;
                 }
+            }
+            if (is_nonzero) {
+                dr_fprintf(STDERR, "got %s[%d]:\n", regno_group_str, i);
+                for (int k = reg_off; k < reg_off + reg_sz; ++k) {
+                    dr_fprintf(STDERR, "%02x", reg_buf[k]);
+                }
+                dr_fprintf(STDERR, "\n");
+                break;
+            }
+        }
+    }
+}
+
+static int dr_kreg_regno[] = {
+    DR_REG_K0,
+    DR_REG_K1,
+    DR_REG_K2,
+    DR_REG_K3,
+    DR_REG_K4,
+    DR_REG_K5,
+    DR_REG_K6,
+    DR_REG_K7,
+};
+
+static void read_kreg_state(dr_mcontext_t *mcontext) {
+    int *dr_avx512_regno = dr_kreg_regno;
+    const char* regno_group_str = "k";
+    int reg_sz = 8;
+
+    #define MAX_REG_SZ 64
+    
+    //if buffer remains 0xabababababab... after register value then reading probably failed
+    byte reg_buf[NUM_K_REGS * MAX_REG_SZ]; // for simplicity, we allocate MAX_REG_SZ for each register, even if the register size is smaller
+    memset(reg_buf, 0xab, sizeof(reg_buf)); 
+
+    bool get_reg_value_ok = true;
+    for (int i = 0; get_reg_value_ok && i < NUM_K_REGS; i++) {
+        get_reg_value_ok = reg_get_value_ex(dr_avx512_regno[i], mcontext, &reg_buf[i * MAX_REG_SZ]);
+    }
+
+    if (!get_reg_value_ok) {
+        dr_fprintf(STDERR, "ERROR: problem reading %s value\n", regno_group_str);
+    } else {
+        int reg_off = 0;
+        for (int i = 0; i < NUM_K_REGS; ++i, reg_off += MAX_REG_SZ) {
+            // loop through and check if any nonzero value. if so, print out the buf
+            bool is_nonzero = false;
+            for (int j = reg_off; j < reg_off + reg_sz; ++j) {
+                if (reg_buf[j]) {
+                    is_nonzero = true;
+                }
+            }
+            if (is_nonzero) {
+                dr_fprintf(STDERR, "got %s[%d]:\n", regno_group_str, i);
+                for (int k = reg_off; k < reg_off + reg_sz; ++k) {
+                    dr_fprintf(STDERR, "%02x", reg_buf[k]);
+                }
+                dr_fprintf(STDERR, "\n");
+                break;
+            }
+        }
+    }
+}
+
+static int dr_rreg_regno[] = {
+    // DR_REG_R0,
+    // DR_REG_R1,
+    // DR_REG_R2,
+    // DR_REG_R3,
+    // DR_REG_R4,
+    // DR_REG_R5,
+    // DR_REG_R6,
+    // DR_REG_R7,
+    DR_REG_R8,
+    DR_REG_R9,
+    DR_REG_R10,
+    DR_REG_R11,
+    DR_REG_R12,
+    DR_REG_R13,
+    DR_REG_R14,
+    DR_REG_R15,
+    // DR_REG_R16,
+    // DR_REG_R17,
+    // DR_REG_R18,
+    // DR_REG_R19,
+    // DR_REG_R20,
+    // DR_REG_R21,
+    // DR_REG_R22,
+    // DR_REG_R23,
+    // DR_REG_R24,
+    // DR_REG_R25,
+    // DR_REG_R26,
+    // DR_REG_R27,
+    // DR_REG_R28,
+    // DR_REG_R29,
+    // DR_REG_R30,
+};
+
+#define NUM_R_REGS 8
+
+static void read_rreg_state(dr_mcontext_t *mcontext) {
+    int *dr_avx512_regno = dr_rreg_regno;
+    const char* regno_group_str = "r";
+    int reg_sz = 8;
+
+    #define MAX_REG_SZ 64
+    
+    //if buffer remains 0xabababababab... after register value then reading probably failed
+    byte reg_buf[NUM_R_REGS * MAX_REG_SZ]; // for simplicity, we allocate MAX_REG_SZ for each register, even if the register size is smaller
+    memset(reg_buf, 0xab, sizeof(reg_buf)); 
+
+    bool get_reg_value_ok = true;
+    for (int i = 0; get_reg_value_ok && i < NUM_R_REGS; i++) {
+        get_reg_value_ok = reg_get_value_ex(dr_avx512_regno[i], mcontext, &reg_buf[i * MAX_REG_SZ]);
+    }
+
+    if (!get_reg_value_ok) {
+        dr_fprintf(STDERR, "ERROR: problem reading %s value\n", regno_group_str);
+    } else {
+        int reg_off = 0;
+        for (int i = 0; i < NUM_R_REGS; ++i, reg_off += MAX_REG_SZ) {
+            // loop through and check if any nonzero value. if so, print out the buf
+            bool is_nonzero = false;
+            for (int j = reg_off; j < reg_off + reg_sz; ++j) {
+                if (reg_buf[j]) {
+                    is_nonzero = true;
+                }
+            }
+            if (is_nonzero) {
+                dr_fprintf(STDERR, "got %s[%d]:\n", regno_group_str, i+8);
+                for (int k = reg_off; k < reg_off + reg_sz; ++k) {
+                    dr_fprintf(STDERR, "%02x", reg_buf[k]);
+                }
+                dr_fprintf(STDERR, "\n");
+                break;
             }
         }
     }
@@ -400,6 +533,8 @@ static void read_avx512_state() {
     read_avx512_regs(&mcontext, XMM);
     read_avx512_regs(&mcontext, YMM);
     read_avx512_regs(&mcontext, ZMM);
+    read_kreg_state(&mcontext);
+    read_rreg_state(&mcontext);
 }
 
 
