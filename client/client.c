@@ -418,16 +418,23 @@ static void read_reg_state(dr_mcontext_t *mcontext, int *dr_regno, int dr_regno_
     }
 }
 
-static void read_avx512_state() {
+static void read_avx512_state(int AVX512_REG_USE) {
     dr_fprintf(STDERR, "Reading application state\n");
     void *drcontext = dr_get_current_drcontext();
     dr_mcontext_t mcontext;
     mcontext.size = sizeof(mcontext);
     mcontext.flags = DR_MC_ALL;
     dr_get_mcontext(drcontext, &mcontext);
-    read_reg_state(&mcontext, dr_xmm_regno, NUM_AVX512_REGS, "xmm", 16);
-    read_reg_state(&mcontext, dr_ymm_regno, NUM_AVX512_REGS, "ymm", 32);
-    read_reg_state(&mcontext, dr_zmm_regno, NUM_AVX512_REGS, "zmm", 64);
+    if ((AVX512_REG_USE & 0b11 << 0) > 0) {
+        read_reg_state(&mcontext, dr_xmm_regno, NUM_AVX512_REGS, "xmm", 16);
+    }
+    if ((AVX512_REG_USE & 0b11 << 2) > 0) {
+        read_reg_state(&mcontext, dr_ymm_regno, NUM_AVX512_REGS, "ymm", 32);
+    }
+    if ((AVX512_REG_USE & 0b11 << 4) > 0) {
+        read_reg_state(&mcontext, dr_zmm_regno, NUM_AVX512_REGS, "zmm", 64);
+    }
+
     read_reg_state(&mcontext, dr_k_regno, 8, "k", 8);
     read_reg_state(&mcontext, dr_r_regno, 8, "r", 8);
 }
@@ -508,7 +515,41 @@ event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *inst
              */
             if (instr_is_scatter(ins) || instr_is_gather(ins)) {
                 // uint opcode = instr_get_opcode(ins);
-                dr_insert_clean_call(drcontext, bb, ins, (void *)read_avx512_state, false, 0);
+
+                int AVX512_REG_USE = 0;
+                opnd_t opnd;
+                DR_ASSERT(instr_operands_valid(ins));
+                for (int i = 0; i < instr_num_dsts(ins); i++) {
+                    opnd = instr_get_dst(ins, i);
+                    if (opnd_is_reg(opnd) && reg_is_xmm(opnd_get_reg(opnd))) {
+                        dr_fprintf(STDERR, "DST USES XMM\n");
+                        AVX512_REG_USE |= 1 << 0;
+                    }
+                    if (opnd_is_reg(opnd) && reg_is_ymm(opnd_get_reg(opnd))) {
+                        dr_fprintf(STDERR, "DST USES YMM\n");
+                        AVX512_REG_USE |= 1 << 2;
+                    }
+                    if (opnd_is_reg(opnd) && reg_is_strictly_zmm(opnd_get_reg(opnd))) {
+                        dr_fprintf(STDERR, "DST USES ZMM\n");
+                        AVX512_REG_USE |= 1 << 4;
+                    }
+                }
+                for (int i = 0; i < instr_num_srcs(ins); i++) {
+                    opnd = instr_get_src(ins, i);
+                    if (opnd_is_reg(opnd) && reg_is_xmm(opnd_get_reg(opnd))) {
+                        dr_fprintf(STDERR, "SRC USES XMM\n");
+                        AVX512_REG_USE |= 1 << 1;
+                    }
+                    if (opnd_is_reg(opnd) && reg_is_ymm(opnd_get_reg(opnd))) {
+                        dr_fprintf(STDERR, "SRC USES YMM\n");
+                        AVX512_REG_USE |= 1 << 3;
+                    }
+                    if (opnd_is_reg(opnd) && reg_is_strictly_zmm(opnd_get_reg(opnd))) {
+                        dr_fprintf(STDERR, "SRC USES ZMM\n");
+                        AVX512_REG_USE |= 1 << 5;
+                    }
+                }
+                dr_insert_clean_call(drcontext, bb, ins, (void *)read_avx512_state, false, 1, OPND_CREATE_INT32(AVX512_REG_USE));
                 // dr_insert_clean_call(drcontext, bb, ins, (void *)clobber_avx512_state, false, 0);
                 drx_insert_counter_update(drcontext, bb, instr,
                     // We're using drmgr, so these slots here won't be used: drreg's slots will be.
