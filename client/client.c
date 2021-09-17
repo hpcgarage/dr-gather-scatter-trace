@@ -289,13 +289,16 @@ static void read_reg_states(int* regs, int num_regs) {
     } else {
         int reg_off = 0;
         for (i = 0; i < num_regs; ++i, reg_off += MAX_REG_SZ) {
-            int reg_sz = MAX_REG_SZ;
+            int reg_sz = -1;
             if (reg_is_strictly_xmm(regs[i]))                   reg_sz = 16;
             if (reg_is_strictly_ymm(regs[i]))                   reg_sz = 32;
             if (reg_is_strictly_zmm(regs[i]))                   reg_sz = 64;
             if (reg_is_opmask(regs[i]))                         reg_sz = 8;
             if (regs[i] >= DR_REG_R8 && regs[i] <= DR_REG_R15)  reg_sz = 8;
-            if (reg_sz == -1) dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
+            if (reg_sz == -1) {
+            reg_sz = MAX_REG_SZ;
+            dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
+        }
 
             dr_fprintf(STDERR, "C\n");
             dr_fprintf(STDERR, "regno %d\n", regs[i]);
@@ -335,13 +338,16 @@ static void read_reg_state(int reg) {
         dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[reg]);
     } else {
         int reg_off = 0;
-        int reg_sz = MAX_REG_SZ;
+        int reg_sz = -1;
         if (reg_is_strictly_xmm(reg))                   reg_sz = 16;
         if (reg_is_strictly_ymm(reg))                   reg_sz = 32;
         if (reg_is_strictly_zmm(reg))                   reg_sz = 64;
         if (reg_is_opmask(reg))                         reg_sz = 8;
         if (reg >= DR_REG_R8 && reg <= DR_REG_R15)  reg_sz = 8;
-        if (reg_sz == -1) dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
+        if (reg_sz == -1) {
+            reg_sz = MAX_REG_SZ;
+            dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
+        }
 
         
         dr_fprintf(STDERR, "%s: ", reg_names[reg]);
