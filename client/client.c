@@ -74,12 +74,7 @@ enum {
     NUM_ISA_MODE,
 };
 
-#ifdef X64
-    #define NUM_AVX512_REGS 32
-#else
-    #define NUM_AVX512_REGS 8
-#endif
-
+// copied from dynamorio core/ir/x86/encode.c
 const char *const reg_names[] = {
     "<NULL>", "rax",   "rcx",   "rdx",   "rbx",   "rsp",   "rbp",   "rsi",       "rdi",
     "r8",     "r9",    "r10",   "r11",   "r12",   "r13",   "r14",   "r15",       "eax",
@@ -259,228 +254,6 @@ get_count_isa_idx(void *drcontext)
     return 0;
 }
 
-static int dr_xmm_regno[] = {
-    DR_REG_XMM0,
-    DR_REG_XMM1,
-    DR_REG_XMM2,
-    DR_REG_XMM3,
-    DR_REG_XMM4,
-    DR_REG_XMM5,
-    DR_REG_XMM6,
-    DR_REG_XMM7,
-#ifdef X64
-    DR_REG_XMM8,
-    DR_REG_XMM9,
-    DR_REG_XMM10,
-    DR_REG_XMM11,
-    DR_REG_XMM12,
-    DR_REG_XMM13,
-    DR_REG_XMM14,
-    DR_REG_XMM15,
-    DR_REG_XMM16,
-    DR_REG_XMM17,
-    DR_REG_XMM18,
-    DR_REG_XMM19,
-    DR_REG_XMM20,
-    DR_REG_XMM21,
-    DR_REG_XMM22,
-    DR_REG_XMM23,
-    DR_REG_XMM24,
-    DR_REG_XMM25,
-    DR_REG_XMM26,
-    DR_REG_XMM27,
-    DR_REG_XMM28,
-    DR_REG_XMM29,
-    DR_REG_XMM30,
-    DR_REG_XMM31,
-#endif
-};
-
-static int dr_ymm_regno[] = {
-    DR_REG_YMM0,
-    DR_REG_YMM1,
-    DR_REG_YMM2,
-    DR_REG_YMM3,
-    DR_REG_YMM4,
-    DR_REG_YMM5,
-    DR_REG_YMM6,
-    DR_REG_YMM7,
-#ifdef X64
-    DR_REG_YMM8,
-    DR_REG_YMM9,
-    DR_REG_YMM10,
-    DR_REG_YMM11,
-    DR_REG_YMM12,
-    DR_REG_YMM13,
-    DR_REG_YMM14,
-    DR_REG_YMM15,
-    DR_REG_YMM16,
-    DR_REG_YMM17,
-    DR_REG_YMM18,
-    DR_REG_YMM19,
-    DR_REG_YMM20,
-    DR_REG_YMM21,
-    DR_REG_YMM22,
-    DR_REG_YMM23,
-    DR_REG_YMM24,
-    DR_REG_YMM25,
-    DR_REG_YMM26,
-    DR_REG_YMM27,
-    DR_REG_YMM28,
-    DR_REG_YMM29,
-    DR_REG_YMM30,
-    DR_REG_YMM31,
-#endif
-};
-
-static int dr_zmm_regno[] = {
-    DR_REG_ZMM0,
-    DR_REG_ZMM1,
-    DR_REG_ZMM2,
-    DR_REG_ZMM3,
-    DR_REG_ZMM4,
-    DR_REG_ZMM5,
-    DR_REG_ZMM6,
-    DR_REG_ZMM7,
-#ifdef X64
-    DR_REG_ZMM8,
-    DR_REG_ZMM9,
-    DR_REG_ZMM10,
-    DR_REG_ZMM11,
-    DR_REG_ZMM12,
-    DR_REG_ZMM13,
-    DR_REG_ZMM14,
-    DR_REG_ZMM15,
-    DR_REG_ZMM16,
-    DR_REG_ZMM17,
-    DR_REG_ZMM18,
-    DR_REG_ZMM19,
-    DR_REG_ZMM20,
-    DR_REG_ZMM21,
-    DR_REG_ZMM22,
-    DR_REG_ZMM23,
-    DR_REG_ZMM24,
-    DR_REG_ZMM25,
-    DR_REG_ZMM26,
-    DR_REG_ZMM27,
-    DR_REG_ZMM28,
-    DR_REG_ZMM29,
-    DR_REG_ZMM30,
-    DR_REG_ZMM31,
-#endif
-};
-
-static int dr_k_regno[] = {
-    DR_REG_K0,
-    DR_REG_K1,
-    DR_REG_K2,
-    DR_REG_K3,
-    DR_REG_K4,
-    DR_REG_K5,
-    DR_REG_K6,
-    DR_REG_K7,
-};
-
-static int dr_r_regno[] = {
-    // DR_REG_R0,
-    // DR_REG_R1,
-    // DR_REG_R2,
-    // DR_REG_R3,
-    // DR_REG_R4,
-    // DR_REG_R5,
-    // DR_REG_R6,
-    // DR_REG_R7,
-    DR_REG_R8,
-    DR_REG_R9,
-    DR_REG_R10,
-    DR_REG_R11,
-    DR_REG_R12,
-    DR_REG_R13,
-    DR_REG_R14,
-    DR_REG_R15,
-    // DR_REG_R16,
-    // DR_REG_R17,
-    // DR_REG_R18,
-    // DR_REG_R19,
-    // DR_REG_R20,
-    // DR_REG_R21,
-    // DR_REG_R22,
-    // DR_REG_R23,
-    // DR_REG_R24,
-    // DR_REG_R25,
-    // DR_REG_R26,
-    // DR_REG_R27,
-    // DR_REG_R28,
-    // DR_REG_R29,
-    // DR_REG_R30,
-};
-
-/**
- * Reads and prints to stdout the state of registers
- * mcontext: dynamorio context
- * dr_rego: list of dynamorio register ids to read
- * dr_regno_sz: size of the list of dynamorio register ids to read.
- *              Cannot be larger than MAX_NUM_REG
- * reg_str: a string describing the register group (ie, "xmm", "ymm", "zmm", etc)
- * reg_sz: the size of the registers, in bytes. Cannot be larger than MAX_REG_SZ.
- */
-static void read_reg_state(dr_mcontext_t *mcontext, int *dr_regno, int dr_regno_sz, const char *reg_str, int reg_sz) {
-    #define MAX_REG_SZ 64
-    #define MAX_NUM_REG 32
-
-    // if buffer remains 0xabababababab... after register value then reading probably failed
-    // for simplicity, we allocate MAX_REG_SZ for each register, even if the register size is smaller
-    byte reg_buf[MAX_NUM_REG * MAX_REG_SZ];
-    memset(reg_buf, 0xab, sizeof(reg_buf));
-
-    bool get_reg_value_ok = true;
-    for (int i = 0; get_reg_value_ok && i < dr_regno_sz; ++i) {
-        get_reg_value_ok = reg_get_value_ex(dr_regno[i], mcontext, &reg_buf[i * MAX_REG_SZ]);
-    }
-
-    if (!get_reg_value_ok) {
-        dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_str);
-    } else {
-        int reg_off = 0;
-        for (int i = 0; i < dr_regno_sz; ++i, reg_off += MAX_REG_SZ) {
-            // loop through and check if any nonzero value. if so, print out the buf
-            bool is_nonzero = false;
-            for (int j = reg_off; j < reg_off + reg_sz; ++j) {
-                is_nonzero |= reg_buf[j];
-            }
-            if (is_nonzero) {
-                dr_fprintf(STDERR, "got %s[%d]:\n", reg_str, i);
-                for (int k = reg_off; k < reg_off + reg_sz; ++k) {
-                    dr_fprintf(STDERR, "%02x", reg_buf[k]);
-                }
-                dr_fprintf(STDERR, "\n");
-                break;
-            }
-        }
-    }
-}
-
-static void read_avx512_state(int AVX512_REG_USE) {
-    dr_fprintf(STDERR, "Reading application state\n");
-    void *drcontext = dr_get_current_drcontext();
-    dr_mcontext_t mcontext;
-    mcontext.size = sizeof(mcontext);
-    mcontext.flags = DR_MC_ALL;
-    dr_get_mcontext(drcontext, &mcontext);
-    if ((AVX512_REG_USE & 0b11 << 0) > 0) {
-        read_reg_state(&mcontext, dr_xmm_regno, NUM_AVX512_REGS, "xmm", 16);
-    }
-    if ((AVX512_REG_USE & 0b11 << 2) > 0) {
-        read_reg_state(&mcontext, dr_ymm_regno, NUM_AVX512_REGS, "ymm", 32);
-    }
-    if ((AVX512_REG_USE & 0b11 << 4) > 0) {
-        read_reg_state(&mcontext, dr_zmm_regno, NUM_AVX512_REGS, "zmm", 64);
-    }
-
-    read_reg_state(&mcontext, dr_k_regno, 8, "k", 8);
-    read_reg_state(&mcontext, dr_r_regno, 8, "r", 8);
-}
-
 static void read_reg_states(int* regs, int num_regs) {
     dr_fprintf(STDERR, "Reading application state\n");
     for (int k = 0; k < num_regs; k++) {
@@ -540,7 +313,7 @@ static void read_reg_states(int* regs, int num_regs) {
 
 }
 
-static void read_reg_state1(int reg) {
+static void read_reg_state(int reg) {
     void *drcontext = dr_get_current_drcontext();
     dr_mcontext_t mcontext;
     mcontext.size = sizeof(mcontext);
@@ -578,60 +351,59 @@ static void read_reg_state1(int reg) {
         dr_fprintf(STDERR, "\n");
 
     }
-
 }
 
 
-static void
-clobber_avx512_state()
-{
-    byte buf[64];
-    memset(buf, 0, sizeof(buf));
-    dr_fprintf(STDERR, "Clobbering all zmm registers\n");
-    __asm__ __volatile__("vmovups %0, %%zmm0" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm1" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm2" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm3" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm4" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm5" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm6" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm7" : : "m"(buf));
-#ifdef X64
-    __asm__ __volatile__("vmovups %0, %%zmm8" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm9" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm10" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm11" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm12" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm13" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm14" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm15" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm16" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm17" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm18" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm19" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm20" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm21" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm22" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm23" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm24" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm25" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm26" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm27" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm28" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm29" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm30" : : "m"(buf));
-    __asm__ __volatile__("vmovups %0, %%zmm31" : : "m"(buf));
-#endif
-    dr_fprintf(STDERR, "Clobbering all mask registers\n");
-    __asm__ __volatile__("kmovw %0, %%k0" : : "m"(buf));
-    __asm__ __volatile__("kmovw %0, %%k1" : : "m"(buf));
-    __asm__ __volatile__("kmovw %0, %%k2" : : "m"(buf));
-    __asm__ __volatile__("kmovw %0, %%k3" : : "m"(buf));
-    __asm__ __volatile__("kmovw %0, %%k4" : : "m"(buf));
-    __asm__ __volatile__("kmovw %0, %%k5" : : "m"(buf));
-    __asm__ __volatile__("kmovw %0, %%k6" : : "m"(buf));
-    __asm__ __volatile__("kmovw %0, %%k7" : : "m"(buf));
-}
+// static void
+// clobber_avx512_state()
+// {
+//     byte buf[64];
+//     memset(buf, 0, sizeof(buf));
+//     dr_fprintf(STDERR, "Clobbering all zmm registers\n");
+//     __asm__ __volatile__("vmovups %0, %%zmm0" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm1" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm2" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm3" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm4" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm5" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm6" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm7" : : "m"(buf));
+// #ifdef X64
+//     __asm__ __volatile__("vmovups %0, %%zmm8" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm9" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm10" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm11" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm12" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm13" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm14" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm15" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm16" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm17" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm18" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm19" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm20" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm21" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm22" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm23" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm24" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm25" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm26" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm27" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm28" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm29" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm30" : : "m"(buf));
+//     __asm__ __volatile__("vmovups %0, %%zmm31" : : "m"(buf));
+// #endif
+//     dr_fprintf(STDERR, "Clobbering all mask registers\n");
+//     __asm__ __volatile__("kmovw %0, %%k0" : : "m"(buf));
+//     __asm__ __volatile__("kmovw %0, %%k1" : : "m"(buf));
+//     __asm__ __volatile__("kmovw %0, %%k2" : : "m"(buf));
+//     __asm__ __volatile__("kmovw %0, %%k3" : : "m"(buf));
+//     __asm__ __volatile__("kmovw %0, %%k4" : : "m"(buf));
+//     __asm__ __volatile__("kmovw %0, %%k5" : : "m"(buf));
+//     __asm__ __volatile__("kmovw %0, %%k6" : : "m"(buf));
+//     __asm__ __volatile__("kmovw %0, %%k7" : : "m"(buf));
+// }
 
 
 
@@ -701,18 +473,6 @@ event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *inst
                         regs[num_regs++] = opnd_get_base(opnd);
                         regs[num_regs++] = opnd_get_index(opnd);
                     }
-                    // dr_fprintf(STDERR, "src opnd null %d\n", opnd_is_null(opnd));
-                    // dr_fprintf(STDERR, "src opnd immed_int %d\n", opnd_is_immed_int(opnd));
-                    // dr_fprintf(STDERR, "src opnd immed_float %d\n", opnd_is_immed_float(opnd));
-                    // dr_fprintf(STDERR, "src opnd immed_double %d\n", opnd_is_immed_double(opnd));
-                    // dr_fprintf(STDERR, "src opnd near_pc %d\n", opnd_is_near_pc(opnd));
-                    // dr_fprintf(STDERR, "src opnd near_instr %d\n", opnd_is_near_instr(opnd));
-                    // dr_fprintf(STDERR, "src opnd reg %d\n", opnd_is_reg(opnd));
-                    // dr_fprintf(STDERR, "src opnd base_disp %d\n", opnd_is_base_disp(opnd));
-                    // dr_fprintf(STDERR, "src opnd far_pc %d\n", opnd_is_far_pc(opnd));
-                    // dr_fprintf(STDERR, "src opnd far_instr %d\n", opnd_is_far_instr(opnd));
-                    // dr_fprintf(STDERR, "src opnd mem_instr %d\n", opnd_is_mem_instr(opnd));
-                    // dr_fprintf(STDERR, "src opnd valid %d\n", opnd_is_valid(opnd));
                 }
 
                 for (int k = 0; k < num_regs; k++) {
@@ -720,14 +480,11 @@ event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *inst
                 }
                 dr_fprintf(STDERR, "\n\n");
 
+                //dr_insert_clean_call(drcontext, bb, ins, (void *)read_reg_states, false, 2, OPND_CREATE_MEM64(DR_REG_RDI, offsetof(regs, num_regs * MAX_REG_SZ)), OPND_CREATE_INT32(num_regs));
                 for (int k = 0; k < num_regs; k++) {
-                    dr_insert_clean_call(drcontext, bb, ins, (void *)read_reg_state1, false, 1, OPND_CREATE_INT32(regs[k]));
+                    dr_insert_clean_call(drcontext, bb, ins, (void *)read_reg_state, false, 1, OPND_CREATE_INT32(regs[k]));
                 }
 
-                //dr_insert_clean_call(drcontext, bb, ins, (void *)read_reg_states, false, 2, OPND_CREATE_MEM64(DR_REG_RDI, offsetof(regs, num_regs * MAX_REG_SZ)), OPND_CREATE_INT32(num_regs));
-                //dr_insert_clean_call(drcontext, bb, ins, (void *)read_avx512_state, false, 4, OPND_CREATE_INTPTR(dst_regs), OPND_CREATE_INT32(num_dst_regs), OPND_CREATE_INTPTR(src_regs), OPND_CREATE_INT32(num_src_regs));
-                
-                // dr_insert_clean_call(drcontext, bb, ins, (void *)read_avx512_state, false, 0);
                 // dr_insert_clean_call(drcontext, bb, ins, (void *)clobber_avx512_state, false, 0);
                 drx_insert_counter_update(drcontext, bb, instr,
                     // We're using drmgr, so these slots here won't be used: drreg's slots will be.
