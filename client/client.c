@@ -80,6 +80,48 @@ enum {
     #define NUM_AVX512_REGS 8
 #endif
 
+const char *const reg_names[] = {
+    "<NULL>", "rax",   "rcx",   "rdx",   "rbx",   "rsp",   "rbp",   "rsi",       "rdi",
+    "r8",     "r9",    "r10",   "r11",   "r12",   "r13",   "r14",   "r15",       "eax",
+    "ecx",    "edx",   "ebx",   "esp",   "ebp",   "esi",   "edi",   "r8d",       "r9d",
+    "r10d",   "r11d",  "r12d",  "r13d",  "r14d",  "r15d",  "ax",    "cx",        "dx",
+    "bx",     "sp",    "bp",    "si",    "di",    "r8w",   "r9w",   "r10w",      "r11w",
+    "r12w",   "r13w",  "r14w",  "r15w",  "al",    "cl",    "dl",    "bl",        "ah",
+    "ch",     "dh",    "bh",    "r8l",   "r9l",   "r10l",  "r11l",  "r12l",      "r13l",
+    "r14l",   "r15l",  "spl",   "bpl",   "sil",   "dil",   "mm0",   "mm1",       "mm2",
+    "mm3",    "mm4",   "mm5",   "mm6",   "mm7",   "xmm0",  "xmm1",  "xmm2",      "xmm3",
+    "xmm4",   "xmm5",  "xmm6",  "xmm7",  "xmm8",  "xmm9",  "xmm10", "xmm11",     "xmm12",
+    "xmm13",  "xmm14", "xmm15", "xmm16", "xmm17", "xmm18", "xmm19", "xmm20",     "xmm21",
+    "xmm22",  "xmm23", "xmm24", "xmm25", "xmm26", "xmm27", "xmm28", "xmm29",     "xmm30",
+    "xmm31",  "",      "",      "",      "",      "",      "",      "",          "",
+    "",       "",      "",      "",      "",      "",      "",      "",          "",
+    "",       "",      "",      "",      "",      "",      "",      "",          "",
+    "",       "",      "",      "",      "",      "",      "st0",   "st1",       "st2",
+    "st3",    "st4",   "st5",   "st6",   "st7",   "es",    "cs",    "ss",        "ds",
+    "fs",     "gs",    "dr0",   "dr1",   "dr2",   "dr3",   "dr4",   "dr5",       "dr6",
+    "dr7",    "dr8",   "dr9",   "dr10",  "dr11",  "dr12",  "dr13",  "dr14",      "dr15",
+    "cr0",    "cr1",   "cr2",   "cr3",   "cr4",   "cr5",   "cr6",   "cr7",       "cr8",
+    "cr9",    "cr10",  "cr11",  "cr12",  "cr13",  "cr14",  "cr15",  "<invalid>", "ymm0",
+    "ymm1",   "ymm2",  "ymm3",  "ymm4",  "ymm5",  "ymm6",  "ymm7",  "ymm8",      "ymm9",
+    "ymm10",  "ymm11", "ymm12", "ymm13", "ymm14", "ymm15", "ymm16", "ymm17",     "ymm18",
+    "ymm19",  "ymm20", "ymm21", "ymm22", "ymm23", "ymm24", "ymm25", "ymm26",     "ymm27",
+    "ymm28",  "ymm29", "ymm30", "ymm31", "",      "",      "",      "",          "",
+    "",       "",      "",      "",      "",      "",      "",      "",          "",
+    "",       "",      "",      "",      "",      "",      "",      "",          "",
+    "",       "",      "",      "",      "",      "",      "",      "",          "",
+    "zmm0",   "zmm1",  "zmm2",  "zmm3",  "zmm4",  "zmm5",  "zmm6",  "zmm7",      "zmm8",
+    "zmm9",   "zmm10", "zmm11", "zmm12", "zmm13", "zmm14", "zmm15", "zmm16",     "zmm17",
+    "zmm18",  "zmm19", "zmm20", "zmm21", "zmm22", "zmm23", "zmm24", "zmm25",     "zmm26",
+    "zmm27",  "zmm28", "zmm29", "zmm30", "zmm31", "",      "",      "",          "",
+    "",       "",      "",      "",      "",      "",      "",      "",          "",
+    "",       "",      "",      "",      "",      "",      "",      "",          "",
+    "",       "",      "",      "",      "",      "",      "",      "",          "",
+    "",       "k0",    "k1",    "k2",    "k3",    "k4",    "k5",    "k6",        "k7",
+    "",       "",      "",      "",      "",      "",      "",      "",          "bnd0",
+    "bnd1",   "bnd2",  "bnd3",
+    /* when you update here, update dr_reg_fixer[] too */
+};
+
 static uint count[NUM_ISA_MODE][OP_LAST + 1];
 #define NUM_COUNT sizeof(count[0]) / sizeof(count[0][0])
 /* We only display the top 15 counts.  This sample could be extended to
@@ -439,6 +481,106 @@ static void read_avx512_state(int AVX512_REG_USE) {
     read_reg_state(&mcontext, dr_r_regno, 8, "r", 8);
 }
 
+static void read_reg_states(int* regs, int num_regs) {
+    dr_fprintf(STDERR, "Reading application state\n");
+    for (int k = 0; k < num_regs; k++) {
+        dr_fprintf(STDERR, "REGS %d\n", regs[k]);
+    }
+    dr_fprintf(STDERR, "\n");
+    void *drcontext = dr_get_current_drcontext();
+    dr_mcontext_t mcontext;
+    mcontext.size = sizeof(mcontext);
+    mcontext.flags = DR_MC_ALL;
+    dr_get_mcontext(drcontext, &mcontext);
+
+    dr_fprintf(STDERR, "A\n");
+
+    #define MAX_REG_SZ 64
+    #define MAX_NUM_REG 32
+
+    // if buffer remains 0xabababababab... after register value then reading probably failed
+    // for simplicity, we allocate MAX_REG_SZ for each register, even if the register size is smaller
+    byte reg_buf[MAX_NUM_REG * MAX_REG_SZ];
+    memset(reg_buf, 0xab, sizeof(reg_buf));
+
+    bool get_reg_value_ok = true;
+    int i;
+    for (i = 0; get_reg_value_ok && i < num_regs; ++i) {
+        get_reg_value_ok = reg_get_value_ex(regs[i], &mcontext, &reg_buf[i * MAX_REG_SZ]);
+    }
+
+    dr_fprintf(STDERR, "B\n");
+
+    if (!get_reg_value_ok) {
+        dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[regs[i]]);
+    } else {
+        int reg_off = 0;
+        for (i = 0; i < num_regs; ++i, reg_off += MAX_REG_SZ) {
+            int reg_sz = MAX_REG_SZ;
+            if (reg_is_strictly_xmm(regs[i]))                   reg_sz = 16;
+            if (reg_is_strictly_ymm(regs[i]))                   reg_sz = 32;
+            if (reg_is_strictly_zmm(regs[i]))                   reg_sz = 64;
+            if (reg_is_opmask(regs[i]))                         reg_sz = 8;
+            if (regs[i] >= DR_REG_R8 && regs[i] <= DR_REG_R15)  reg_sz = 8;
+            if (reg_sz == -1) dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
+
+            dr_fprintf(STDERR, "C\n");
+            dr_fprintf(STDERR, "regno %d\n", regs[i]);
+            dr_fprintf(STDERR, "D\n");
+            
+            dr_fprintf(STDERR, "%s: ", reg_names[regs[i]]);
+            for (int k = reg_off; k < reg_off + reg_sz; ++k) {
+                dr_fprintf(STDERR, "%02x", reg_buf[k]);
+            }
+            dr_fprintf(STDERR, "\n");
+
+            dr_fprintf(STDERR, "D\n");
+        }
+    }
+
+}
+
+static void read_reg_state1(int reg) {
+    void *drcontext = dr_get_current_drcontext();
+    dr_mcontext_t mcontext;
+    mcontext.size = sizeof(mcontext);
+    mcontext.flags = DR_MC_ALL;
+    dr_get_mcontext(drcontext, &mcontext);
+
+
+    #define MAX_REG_SZ 64
+
+    // if buffer remains 0xabababababab... after register value then reading probably failed
+    // for simplicity, we allocate MAX_REG_SZ for each register, even if the register size is smaller
+    byte reg_buf[MAX_REG_SZ];
+    memset(reg_buf, 0xab, sizeof(reg_buf));
+
+    bool get_reg_value_ok = true;
+    get_reg_value_ok = reg_get_value_ex(reg, &mcontext, &reg_buf);
+
+    if (!get_reg_value_ok) {
+        dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[reg]);
+    } else {
+        int reg_off = 0;
+        int reg_sz = MAX_REG_SZ;
+        if (reg_is_strictly_xmm(reg))                   reg_sz = 16;
+        if (reg_is_strictly_ymm(reg))                   reg_sz = 32;
+        if (reg_is_strictly_zmm(reg))                   reg_sz = 64;
+        if (reg_is_opmask(reg))                         reg_sz = 8;
+        if (reg >= DR_REG_R8 && reg <= DR_REG_R15)  reg_sz = 8;
+        if (reg_sz == -1) dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
+
+        
+        dr_fprintf(STDERR, "%s: ", reg_names[reg]);
+        for (int k = reg_off; k < reg_off + reg_sz; ++k) {
+            dr_fprintf(STDERR, "%02x", reg_buf[k]);
+        }
+        dr_fprintf(STDERR, "\n");
+
+    }
+
+}
+
 
 static void
 clobber_avx512_state()
@@ -491,6 +633,10 @@ clobber_avx512_state()
     __asm__ __volatile__("kmovw %0, %%k7" : : "m"(buf));
 }
 
+
+
+#define MAX_NUM_REGS_READ 32
+
 /* This is called separately for each instruction in the block. */
 static dr_emit_flags_t
 event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
@@ -514,42 +660,74 @@ event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *inst
              * optimize the spills and restores.
              */
             if (instr_is_scatter(ins) || instr_is_gather(ins)) {
-                // uint opcode = instr_get_opcode(ins);
-
-                int AVX512_REG_USE = 0;
+                dr_fprintf(STDERR, "BEGIN REG PRINTING\n");
                 opnd_t opnd;
                 DR_ASSERT(instr_operands_valid(ins));
+                // int dst_regs[5];
+                // int src_regs[5];
+                // int num_dst_regs = 0;
+                // int num_src_regs = 0;
+
+                int regs[MAX_NUM_REGS_READ];
+                int num_regs = 0;
                 for (int i = 0; i < instr_num_dsts(ins); i++) {
                     opnd = instr_get_dst(ins, i);
-                    if (opnd_is_reg(opnd) && reg_is_xmm(opnd_get_reg(opnd))) {
-                        dr_fprintf(STDERR, "DST USES XMM\n");
-                        AVX512_REG_USE |= 1 << 0;
+                    if (opnd_is_reg(opnd)) {
+                        dr_fprintf(STDERR, "DST REGNO %d, REGNAME %s\n", opnd_get_reg(opnd), reg_names[opnd_get_reg(opnd)]);
+                        // dst_regs[num_dst_regs++] = opnd_get_reg(opnd);
+                        regs[num_regs++] = opnd_get_reg(opnd);
                     }
-                    if (opnd_is_reg(opnd) && reg_is_ymm(opnd_get_reg(opnd))) {
-                        dr_fprintf(STDERR, "DST USES YMM\n");
-                        AVX512_REG_USE |= 1 << 2;
-                    }
-                    if (opnd_is_reg(opnd) && reg_is_strictly_zmm(opnd_get_reg(opnd))) {
-                        dr_fprintf(STDERR, "DST USES ZMM\n");
-                        AVX512_REG_USE |= 1 << 4;
+                    if (opnd_is_base_disp(opnd)) {
+                        dr_fprintf(STDERR, "DST BASE REGNO %d REGNAME %s\n", opnd_get_base(opnd), reg_names[opnd_get_base(opnd)]);
+                        dr_fprintf(STDERR, "DST IDX REGNO %d REGNAME %s\n", opnd_get_index(opnd), reg_names[opnd_get_index(opnd)]);
+                        // dst_regs[num_dst_regs++] = opnd_get_base(opnd);
+                        // dst_regs[num_dst_regs++] = opnd_get_index(opnd);
+                        regs[num_regs++] = opnd_get_base(opnd);
+                        regs[num_regs++] = opnd_get_index(opnd);
                     }
                 }
                 for (int i = 0; i < instr_num_srcs(ins); i++) {
                     opnd = instr_get_src(ins, i);
-                    if (opnd_is_reg(opnd) && reg_is_xmm(opnd_get_reg(opnd))) {
-                        dr_fprintf(STDERR, "SRC USES XMM\n");
-                        AVX512_REG_USE |= 1 << 1;
+                    if (opnd_is_reg(opnd)) {
+                        dr_fprintf(STDERR, "SRC REGNO %d, REGNAME %s\n", opnd_get_reg(opnd), reg_names[opnd_get_reg(opnd)]);
+                        // src_regs[num_src_regs++] = opnd_get_reg(opnd);
+                        regs[num_regs++] = opnd_get_reg(opnd);
                     }
-                    if (opnd_is_reg(opnd) && reg_is_ymm(opnd_get_reg(opnd))) {
-                        dr_fprintf(STDERR, "SRC USES YMM\n");
-                        AVX512_REG_USE |= 1 << 3;
+                    if (opnd_is_base_disp(opnd)) {
+                        dr_fprintf(STDERR, "SRC BASE REGNO %d REGNAME %s\n", opnd_get_base(opnd), reg_names[opnd_get_base(opnd)]);
+                        dr_fprintf(STDERR, "SRC IDX REGNO %d REGNAME %s\n", opnd_get_index(opnd), reg_names[opnd_get_index(opnd)]);
+                        // src_regs[num_src_regs++] = opnd_get_base(opnd);
+                        // src_regs[num_src_regs++] = opnd_get_index(opnd);
+                        regs[num_regs++] = opnd_get_base(opnd);
+                        regs[num_regs++] = opnd_get_index(opnd);
                     }
-                    if (opnd_is_reg(opnd) && reg_is_strictly_zmm(opnd_get_reg(opnd))) {
-                        dr_fprintf(STDERR, "SRC USES ZMM\n");
-                        AVX512_REG_USE |= 1 << 5;
-                    }
+                    // dr_fprintf(STDERR, "src opnd null %d\n", opnd_is_null(opnd));
+                    // dr_fprintf(STDERR, "src opnd immed_int %d\n", opnd_is_immed_int(opnd));
+                    // dr_fprintf(STDERR, "src opnd immed_float %d\n", opnd_is_immed_float(opnd));
+                    // dr_fprintf(STDERR, "src opnd immed_double %d\n", opnd_is_immed_double(opnd));
+                    // dr_fprintf(STDERR, "src opnd near_pc %d\n", opnd_is_near_pc(opnd));
+                    // dr_fprintf(STDERR, "src opnd near_instr %d\n", opnd_is_near_instr(opnd));
+                    // dr_fprintf(STDERR, "src opnd reg %d\n", opnd_is_reg(opnd));
+                    // dr_fprintf(STDERR, "src opnd base_disp %d\n", opnd_is_base_disp(opnd));
+                    // dr_fprintf(STDERR, "src opnd far_pc %d\n", opnd_is_far_pc(opnd));
+                    // dr_fprintf(STDERR, "src opnd far_instr %d\n", opnd_is_far_instr(opnd));
+                    // dr_fprintf(STDERR, "src opnd mem_instr %d\n", opnd_is_mem_instr(opnd));
+                    // dr_fprintf(STDERR, "src opnd valid %d\n", opnd_is_valid(opnd));
                 }
-                dr_insert_clean_call(drcontext, bb, ins, (void *)read_avx512_state, false, 1, OPND_CREATE_INT32(AVX512_REG_USE));
+
+                for (int k = 0; k < num_regs; k++) {
+                    dr_fprintf(STDERR, "REGS %d\n", regs[k]);
+                }
+                dr_fprintf(STDERR, "\n\n");
+
+                for (int k = 0; k < num_regs; k++) {
+                    dr_insert_clean_call(drcontext, bb, ins, (void *)read_reg_state1, false, 1, OPND_CREATE_INT32(regs[k]));
+                }
+
+                //dr_insert_clean_call(drcontext, bb, ins, (void *)read_reg_states, false, 2, OPND_CREATE_MEM64(DR_REG_RDI, offsetof(regs, num_regs * MAX_REG_SZ)), OPND_CREATE_INT32(num_regs));
+                //dr_insert_clean_call(drcontext, bb, ins, (void *)read_avx512_state, false, 4, OPND_CREATE_INTPTR(dst_regs), OPND_CREATE_INT32(num_dst_regs), OPND_CREATE_INTPTR(src_regs), OPND_CREATE_INT32(num_src_regs));
+                
+                // dr_insert_clean_call(drcontext, bb, ins, (void *)read_avx512_state, false, 0);
                 // dr_insert_clean_call(drcontext, bb, ins, (void *)clobber_avx512_state, false, 0);
                 drx_insert_counter_update(drcontext, bb, instr,
                     // We're using drmgr, so these slots here won't be used: drreg's slots will be.
