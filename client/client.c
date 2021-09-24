@@ -254,75 +254,55 @@ get_count_isa_idx(void *drcontext)
     return 0;
 }
 
-static void read_reg_states(int* regs, int num_regs) {
-    dr_fprintf(STDERR, "Reading application state\n");
-    for (int k = 0; k < num_regs; k++) {
-        dr_fprintf(STDERR, "REGS %d\n", regs[k]);
-    }
-    dr_fprintf(STDERR, "\n");
-    void *drcontext = dr_get_current_drcontext();
-    dr_mcontext_t mcontext;
-    mcontext.size = sizeof(mcontext);
-    mcontext.flags = DR_MC_ALL;
-    dr_get_mcontext(drcontext, &mcontext);
-
-    dr_fprintf(STDERR, "A\n");
-
+static void print_reg_val(char *prefix, int regno, dr_mcontext_t *mcontext) {
     #define MAX_REG_SZ 64
-    #define MAX_NUM_REG 32
 
     // if buffer remains 0xabababababab... after register value then reading probably failed
     // for simplicity, we allocate MAX_REG_SZ for each register, even if the register size is smaller
-    byte reg_buf[MAX_NUM_REG * MAX_REG_SZ];
+    byte reg_buf[MAX_REG_SZ];
     memset(reg_buf, 0xab, sizeof(reg_buf));
 
-    bool get_reg_value_ok = true;
-    int i;
-    for (i = 0; get_reg_value_ok && i < num_regs; ++i) {
-        get_reg_value_ok = reg_get_value_ex(regs[i], &mcontext, &reg_buf[i * MAX_REG_SZ]);
+    if (!reg_get_value_ex(regno, mcontext, &reg_buf)) {
+        dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[regno]);
+        return;
     }
 
-    dr_fprintf(STDERR, "B\n");
-
-    if (!get_reg_value_ok) {
-        dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[regs[i]]);
-    } else {
-        int reg_off = 0;
-        for (i = 0; i < num_regs; ++i, reg_off += MAX_REG_SZ) {
-            int reg_sz = -1;
-            if (reg_is_strictly_xmm(regs[i]))                   reg_sz = 16;
-            if (reg_is_strictly_ymm(regs[i]))                   reg_sz = 32;
-            if (reg_is_strictly_zmm(regs[i]))                   reg_sz = 64;
-            if (reg_is_opmask(regs[i]))                         reg_sz = 8;
-            if (regs[i] >= DR_REG_R8 && regs[i] <= DR_REG_R15)  reg_sz = 8;
-            if (reg_sz == -1) {
-            reg_sz = MAX_REG_SZ;
-            dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
-        }
-
-            dr_fprintf(STDERR, "C\n");
-            dr_fprintf(STDERR, "regno %d\n", regs[i]);
-            dr_fprintf(STDERR, "D\n");
-            
-            dr_fprintf(STDERR, "%s: ", reg_names[regs[i]]);
-            for (int k = reg_off; k < reg_off + reg_sz; ++k) {
-                dr_fprintf(STDERR, "%02x", reg_buf[k]);
-            }
-            dr_fprintf(STDERR, "\n");
-
-            dr_fprintf(STDERR, "D\n");
-        }
+    int reg_sz;
+    if (reg_is_strictly_xmm(regno))                      reg_sz = 16;
+    else if (reg_is_strictly_ymm(regno))                 reg_sz = 32;
+    else if (reg_is_strictly_zmm(regno))                 reg_sz = 64;
+    else if (reg_is_opmask(regno))                       reg_sz = 8;
+    else if (regno >= DR_REG_R8 && regno <= DR_REG_R15)  reg_sz = 8;
+    else {
+        reg_sz = MAX_REG_SZ;
+        dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
     }
-
+    
+    dr_fprintf(STDERR, "%s %s: ", prefix, reg_names[regno]);
+    for (int k = 0; k < reg_sz; ++k) {
+        dr_fprintf(STDERR, "%02x", reg_buf[k]);
+    }
+    dr_fprintf(STDERR, "\n");
 }
 
-static void read_reg_state(int reg) {
+static void read_instr_reg_state(app_pc instr_addr) {
     void *drcontext = dr_get_current_drcontext();
     dr_mcontext_t mcontext;
     mcontext.size = sizeof(mcontext);
     mcontext.flags = DR_MC_ALL;
     dr_get_mcontext(drcontext, &mcontext);
 
+    instr_t instr;
+    instr_init(drcontext, &instr);
+	instr_reset(drcontext, &instr);
+    if ((decode(drcontext, instr_addr, &instr)) == NULL) {
+        dr_fprintf(STDERR, "ERROR UNABLE TO DECODE INSTRUCTION\n");
+        return;
+    }
+
+    dr_fprintf(STDOUT, "\nInstruction %s Register State:\n", decode_opcode_name(instr_get_opcode(&instr)));
+    opnd_t opnd;
+    DR_ASSERT(instr_operands_valid(&instr));
 
     #define MAX_REG_SZ 64
 
@@ -331,33 +311,69 @@ static void read_reg_state(int reg) {
     byte reg_buf[MAX_REG_SZ];
     memset(reg_buf, 0xab, sizeof(reg_buf));
 
-    bool get_reg_value_ok = true;
-    get_reg_value_ok = reg_get_value_ex(reg, &mcontext, &reg_buf);
-
-    if (!get_reg_value_ok) {
-        dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[reg]);
-    } else {
-        int reg_off = 0;
-        int reg_sz = -1;
-        if (reg_is_strictly_xmm(reg))                   reg_sz = 16;
-        if (reg_is_strictly_ymm(reg))                   reg_sz = 32;
-        if (reg_is_strictly_zmm(reg))                   reg_sz = 64;
-        if (reg_is_opmask(reg))                         reg_sz = 8;
-        if (reg >= DR_REG_R8 && reg <= DR_REG_R15)  reg_sz = 8;
-        if (reg_sz == -1) {
-            reg_sz = MAX_REG_SZ;
-            dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
+    for (int i = 0; i < instr_num_dsts(&instr); i++) {
+        opnd = instr_get_dst(&instr, i);
+        if (opnd_is_reg(opnd)) {
+            print_reg_val("DST REG", opnd_get_reg(opnd), &mcontext);
+        } else if (opnd_is_base_disp(opnd)) {
+            print_reg_val("DST BASE", opnd_get_base(opnd), &mcontext);
+            print_reg_val("DST DISP", opnd_get_index(opnd), &mcontext);
+        } else {
+            dr_fprintf(STDERR, "UNKNOWN DESTINATION PARAM TYPE, SKIPPING\n");
         }
-
-        
-        dr_fprintf(STDERR, "%s: ", reg_names[reg]);
-        for (int k = reg_off; k < reg_off + reg_sz; ++k) {
-            dr_fprintf(STDERR, "%02x", reg_buf[k]);
+    }
+    for (int i = 0; i < instr_num_srcs(&instr); i++) {
+        opnd = instr_get_src(&instr, i);
+        if (opnd_is_reg(opnd)) {
+            print_reg_val("SRC REG", opnd_get_reg(opnd), &mcontext);
+        } else if (opnd_is_base_disp(opnd)) {
+            print_reg_val("SRC BASE", opnd_get_base(opnd), &mcontext);
+            print_reg_val("SRC DISP", opnd_get_index(opnd), &mcontext);
+        } else {
+            dr_fprintf(STDERR, "UNKNOWN SOURCE PARAM TYPE, SKIPPING\n");
         }
-        dr_fprintf(STDERR, "\n");
-
     }
 }
+
+// static void read_reg_state(int reg) {
+//     void *drcontext = dr_get_current_drcontext();
+//     dr_mcontext_t mcontext;
+//     mcontext.size = sizeof(mcontext);
+//     mcontext.flags = DR_MC_ALL;
+//     dr_get_mcontext(drcontext, &mcontext);
+
+//     #define MAX_REG_SZ 64
+
+//     // if buffer remains 0xabababababab... after register value then reading probably failed
+//     // for simplicity, we allocate MAX_REG_SZ for each register, even if the register size is smaller
+//     byte reg_buf[MAX_REG_SZ];
+//     memset(reg_buf, 0xab, sizeof(reg_buf));
+
+//     bool get_reg_value_ok = true;
+//     get_reg_value_ok = reg_get_value_ex(reg, &mcontext, &reg_buf);
+
+//     if (!get_reg_value_ok) {
+//         dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[reg]);
+//     } else {
+//         int reg_off = 0;
+//         int reg_sz = -1;
+//         if (reg_is_strictly_xmm(reg))                   reg_sz = 16;
+//         if (reg_is_strictly_ymm(reg))                   reg_sz = 32;
+//         if (reg_is_strictly_zmm(reg))                   reg_sz = 64;
+//         if (reg_is_opmask(reg))                         reg_sz = 8;
+//         if (reg >= DR_REG_R8 && reg <= DR_REG_R15)  reg_sz = 8;
+//         if (reg_sz == -1) {
+//             reg_sz = MAX_REG_SZ;
+//             dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
+//         }
+
+//         dr_fprintf(STDERR, "%s: ", reg_names[reg]);
+//         for (int k = reg_off; k < reg_off + reg_sz; ++k) {
+//             dr_fprintf(STDERR, "%02x", reg_buf[k]);
+//         }
+//         dr_fprintf(STDERR, "\n");
+//     }
+// }
 
 
 // static void
@@ -438,59 +454,7 @@ event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *inst
              * optimize the spills and restores.
              */
             if (instr_is_scatter(ins) || instr_is_gather(ins)) {
-                dr_fprintf(STDERR, "BEGIN REG PRINTING\n");
-                opnd_t opnd;
-                DR_ASSERT(instr_operands_valid(ins));
-                // int dst_regs[5];
-                // int src_regs[5];
-                // int num_dst_regs = 0;
-                // int num_src_regs = 0;
-
-                int regs[MAX_NUM_REGS_READ];
-                int num_regs = 0;
-                for (int i = 0; i < instr_num_dsts(ins); i++) {
-                    opnd = instr_get_dst(ins, i);
-                    if (opnd_is_reg(opnd)) {
-                        dr_fprintf(STDERR, "DST REGNO %d, REGNAME %s\n", opnd_get_reg(opnd), reg_names[opnd_get_reg(opnd)]);
-                        // dst_regs[num_dst_regs++] = opnd_get_reg(opnd);
-                        regs[num_regs++] = opnd_get_reg(opnd);
-                    }
-                    if (opnd_is_base_disp(opnd)) {
-                        dr_fprintf(STDERR, "DST BASE REGNO %d REGNAME %s\n", opnd_get_base(opnd), reg_names[opnd_get_base(opnd)]);
-                        dr_fprintf(STDERR, "DST IDX REGNO %d REGNAME %s\n", opnd_get_index(opnd), reg_names[opnd_get_index(opnd)]);
-                        // dst_regs[num_dst_regs++] = opnd_get_base(opnd);
-                        // dst_regs[num_dst_regs++] = opnd_get_index(opnd);
-                        regs[num_regs++] = opnd_get_base(opnd);
-                        regs[num_regs++] = opnd_get_index(opnd);
-                    }
-                }
-                for (int i = 0; i < instr_num_srcs(ins); i++) {
-                    opnd = instr_get_src(ins, i);
-                    if (opnd_is_reg(opnd)) {
-                        dr_fprintf(STDERR, "SRC REGNO %d, REGNAME %s\n", opnd_get_reg(opnd), reg_names[opnd_get_reg(opnd)]);
-                        // src_regs[num_src_regs++] = opnd_get_reg(opnd);
-                        regs[num_regs++] = opnd_get_reg(opnd);
-                    }
-                    if (opnd_is_base_disp(opnd)) {
-                        dr_fprintf(STDERR, "SRC BASE REGNO %d REGNAME %s\n", opnd_get_base(opnd), reg_names[opnd_get_base(opnd)]);
-                        dr_fprintf(STDERR, "SRC IDX REGNO %d REGNAME %s\n", opnd_get_index(opnd), reg_names[opnd_get_index(opnd)]);
-                        // src_regs[num_src_regs++] = opnd_get_base(opnd);
-                        // src_regs[num_src_regs++] = opnd_get_index(opnd);
-                        regs[num_regs++] = opnd_get_base(opnd);
-                        regs[num_regs++] = opnd_get_index(opnd);
-                    }
-                }
-
-                for (int k = 0; k < num_regs; k++) {
-                    dr_fprintf(STDERR, "REGS %d\n", regs[k]);
-                }
-                dr_fprintf(STDERR, "\n\n");
-
-                //dr_insert_clean_call(drcontext, bb, ins, (void *)read_reg_states, false, 2, OPND_CREATE_MEM64(DR_REG_RDI, offsetof(regs, num_regs * MAX_REG_SZ)), OPND_CREATE_INT32(num_regs));
-                for (int k = 0; k < num_regs; k++) {
-                    dr_insert_clean_call(drcontext, bb, ins, (void *)read_reg_state, false, 1, OPND_CREATE_INT32(regs[k]));
-                }
-
+                dr_insert_clean_call(drcontext, bb, ins, (void *)read_instr_reg_state, false, 1, OPND_CREATE_INTPTR(instr_get_app_pc(ins)));
                 // dr_insert_clean_call(drcontext, bb, ins, (void *)clobber_avx512_state, false, 0);
                 drx_insert_counter_update(drcontext, bb, instr,
                     // We're using drmgr, so these slots here won't be used: drreg's slots will be.
