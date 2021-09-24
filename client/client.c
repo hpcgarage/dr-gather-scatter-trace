@@ -33,8 +33,8 @@
 /* Code Manipulation API Sample:
  * opcodes.c
  *
- * Reports the dynamic count of the total number of instructions executed
- * broken down by opcode.
+ * Reports the total number and register values of gather/scatter instructions executed.
+ * Note that only top NUM_COUNT_SHOW instruction counts are displayed.
  */
 
 #include "dr_api.h"
@@ -114,7 +114,6 @@ const char *const reg_names[] = {
     "",       "k0",    "k1",    "k2",    "k3",    "k4",    "k5",    "k6",        "k7",
     "",       "",      "",      "",      "",      "",      "",      "",          "bnd0",
     "bnd1",   "bnd2",  "bnd3",
-    /* when you update here, update dr_reg_fixer[] too */
 };
 
 static uint count[NUM_ISA_MODE][OP_LAST + 1];
@@ -213,7 +212,7 @@ event_exit(void)
         if (count[cur_isa][indices[OP_LAST]] == 0)
             continue;
         len = dr_snprintf(msg, sizeof(msg) / sizeof(msg[0]),
-                          "Top %d opcode execution counts in %s mode:\n", NUM_COUNT_SHOW,
+                          "Gather/scatter execution counts in %s mode:\n",
                           get_isa_mode_name(cur_isa));
         DR_ASSERT(len > 0);
         sofar += len;
