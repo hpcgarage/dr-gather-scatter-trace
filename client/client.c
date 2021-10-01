@@ -157,7 +157,7 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
         /* Ask for best-effort printing to cmd window.  Must be called at init. */
         dr_enable_console_printing();
 #    endif
-        dr_fprintf(STDERR, "Client opcodes is running\n");
+        dr_fprintf(STDOUT, "Client opcodes is running\n");
     }
 #endif
 }
@@ -253,7 +253,7 @@ get_count_isa_idx(void *drcontext)
     return 0;
 }
 
-static void print_reg_val(char *prefix, int regno, dr_mcontext_t *mcontext) {
+static void print_reg_val(const char *opcode_name, const char *prefix, int regno, dr_mcontext_t *mcontext) {
     #define MAX_REG_SZ 64
 
     // if buffer remains 0xabababababab... after register value then reading probably failed
@@ -277,11 +277,64 @@ static void print_reg_val(char *prefix, int regno, dr_mcontext_t *mcontext) {
         dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
     }
     
-    dr_fprintf(STDERR, "%s %s: ", prefix, reg_names[regno]);
+    dr_fprintf(STDOUT, "%s %s %s: ", opcode_name, prefix, reg_names[regno]);
     for (int k = 0; k < reg_sz; ++k) {
-        dr_fprintf(STDERR, "%02x", reg_buf[k]);
+        dr_fprintf(STDOUT, "%02x", reg_buf[k]);
     }
-    dr_fprintf(STDERR, "\n");
+    dr_fprintf(STDOUT, "\n");
+}
+
+static void print_reg_val_opmask_sanity(const char *opcode_name, const char *prefix, int regno, dr_mcontext_t *mcontext, int *opmask_regno, unsigned long *opmask_val) {
+    #define MAX_REG_SZ 64
+
+    // if buffer remains 0xabababababab... after register value then reading probably failed
+    // for simplicity, we allocate MAX_REG_SZ for each register, even if the register size is smaller
+    byte reg_buf[MAX_REG_SZ];
+    memset(reg_buf, 0xab, sizeof(reg_buf));
+
+    if (!reg_get_value_ex(regno, mcontext, &reg_buf)) {
+        dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[regno]);
+        return;
+    }
+
+    int reg_sz;
+    if (reg_is_strictly_xmm(regno))                      reg_sz = 16;
+    else if (reg_is_strictly_ymm(regno))                 reg_sz = 32;
+    else if (reg_is_strictly_zmm(regno))                 reg_sz = 64;
+    else if (reg_is_opmask(regno))                       reg_sz = 8;
+    else if (regno >= DR_REG_R8 && regno <= DR_REG_R15)  reg_sz = 8;
+    else {
+        reg_sz = MAX_REG_SZ;
+        dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
+    }
+
+    if (reg_is_opmask(regno)) {
+        // Get current opmask value
+        unsigned long new_opmask_val = 0;
+        for (int i = 0; i < reg_sz; ++i) {
+            new_opmask_val = new_opmask_val << 8;
+            new_opmask_val += reg_buf[i];
+        }
+
+        if (*opmask_regno > 0) { // There was a previous opmask, check that they're equal
+            if (regno != *opmask_regno) {
+                dr_fprintf(STDERR, "SANITY CHECK: Multiple opmasks in use\n");
+            }
+            if (new_opmask_val != *opmask_val) {
+                dr_fprintf(STDERR, "SANITY CHECK: Multiple opmask values.\n");
+            }
+            return;
+        } else { // This is the first opmask we encounter
+            *opmask_regno = regno;
+            *opmask_val = new_opmask_val;
+        }
+    }
+
+    dr_fprintf(STDOUT, "%s %s %s: ", opcode_name, prefix, reg_names[regno]);
+    for (int k = 0; k < reg_sz; ++k) {
+        dr_fprintf(STDOUT, "%02x", reg_buf[k]);
+    }
+    dr_fprintf(STDOUT, "\n");
 }
 
 static void read_instr_reg_state(app_pc instr_addr) {
@@ -299,9 +352,11 @@ static void read_instr_reg_state(app_pc instr_addr) {
         return;
     }
 
-    dr_fprintf(STDOUT, "\nInstruction %s Register State:\n", decode_opcode_name(instr_get_opcode(&instr)));
     opnd_t opnd;
     DR_ASSERT(instr_operands_valid(&instr));
+
+    const char *opcode_name = decode_opcode_name(instr_get_opcode(&instr));
+    dr_fprintf(STDOUT, "\nInstruction %s Register State:\n", opcode_name);
 
     #define MAX_REG_SZ 64
 
@@ -310,13 +365,18 @@ static void read_instr_reg_state(app_pc instr_addr) {
     byte reg_buf[MAX_REG_SZ];
     memset(reg_buf, 0xab, sizeof(reg_buf));
 
+
+    int opmask_regno = -1;
+    unsigned long opmask_val = 0;
+
     for (int i = 0; i < instr_num_dsts(&instr); i++) {
         opnd = instr_get_dst(&instr, i);
         if (opnd_is_reg(opnd)) {
-            print_reg_val("DST REG", opnd_get_reg(opnd), &mcontext);
+            // print_reg_val("DST REG", opnd_get_reg(opnd), &mcontext);
+            print_reg_val_opmask_sanity(opcode_name, "DST REG", opnd_get_reg(opnd), &mcontext, &opmask_regno, &opmask_val);
         } else if (opnd_is_base_disp(opnd)) {
-            print_reg_val("DST BASE", opnd_get_base(opnd), &mcontext);
-            print_reg_val("DST DISP", opnd_get_index(opnd), &mcontext);
+            print_reg_val(opcode_name, "DST BASE", opnd_get_base(opnd), &mcontext);
+            print_reg_val(opcode_name, "DST DISP", opnd_get_index(opnd), &mcontext);
         } else {
             dr_fprintf(STDERR, "UNKNOWN DESTINATION PARAM TYPE, SKIPPING\n");
         }
@@ -324,10 +384,11 @@ static void read_instr_reg_state(app_pc instr_addr) {
     for (int i = 0; i < instr_num_srcs(&instr); i++) {
         opnd = instr_get_src(&instr, i);
         if (opnd_is_reg(opnd)) {
-            print_reg_val("SRC REG", opnd_get_reg(opnd), &mcontext);
+            // print_reg_val("SRC REG", opnd_get_reg(opnd), &mcontext);
+            print_reg_val_opmask_sanity(opcode_name, "SRC REG", opnd_get_reg(opnd), &mcontext, &opmask_regno, &opmask_val);
         } else if (opnd_is_base_disp(opnd)) {
-            print_reg_val("SRC BASE", opnd_get_base(opnd), &mcontext);
-            print_reg_val("SRC DISP", opnd_get_index(opnd), &mcontext);
+            print_reg_val(opcode_name, "SRC BASE", opnd_get_base(opnd), &mcontext);
+            print_reg_val(opcode_name, "SRC DISP", opnd_get_index(opnd), &mcontext);
         } else {
             dr_fprintf(STDERR, "UNKNOWN SOURCE PARAM TYPE, SKIPPING\n");
         }
@@ -366,11 +427,11 @@ static void read_instr_reg_state(app_pc instr_addr) {
 //             dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
 //         }
 
-//         dr_fprintf(STDERR, "%s: ", reg_names[reg]);
+//         dr_fprintf(STDOUT, "%s: ", reg_names[reg]);
 //         for (int k = reg_off; k < reg_off + reg_sz; ++k) {
-//             dr_fprintf(STDERR, "%02x", reg_buf[k]);
+//             dr_fprintf(STDOUT, "%02x", reg_buf[k]);
 //         }
-//         dr_fprintf(STDERR, "\n");
+//         dr_fprintf(STDOUT, "\n");
 //     }
 // }
 
