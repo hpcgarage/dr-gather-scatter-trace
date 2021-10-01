@@ -1,8 +1,8 @@
 import re
+import sys
 from collections import defaultdict
 
-FILENAME = "/home/vincent/out.txt"
-with open(FILENAME) as file:
+with open(sys.argv[1]) as file:
     matches = re.findall(r"(DST|SRC) (REG|BASE|DISP) ([\w\s]+): ([\w\d]+)\n", file.read())
 
     regdict = defaultdict(lambda: defaultdict(int))
