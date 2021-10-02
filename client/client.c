@@ -266,16 +266,7 @@ static void print_reg_val(const char *opcode_name, const char *prefix, int regno
         return;
     }
 
-    int reg_sz;
-    if (reg_is_strictly_xmm(regno))                      reg_sz = 16;
-    else if (reg_is_strictly_ymm(regno))                 reg_sz = 32;
-    else if (reg_is_strictly_zmm(regno))                 reg_sz = 64;
-    else if (reg_is_opmask(regno))                       reg_sz = 8;
-    else if (regno >= DR_REG_R8 && regno <= DR_REG_R15)  reg_sz = 8;
-    else {
-        reg_sz = MAX_REG_SZ;
-        dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
-    }
+    opnd_size_t reg_sz = reg_get_size(regno);
     
     dr_fprintf(STDOUT, "%s %s %s: ", opcode_name, prefix, reg_names[regno]);
     for (int k = 0; k < reg_sz; ++k) {
@@ -297,16 +288,7 @@ static void print_reg_val_opmask_sanity(const char *opcode_name, const char *pre
         return;
     }
 
-    int reg_sz;
-    if (reg_is_strictly_xmm(regno))                      reg_sz = 16;
-    else if (reg_is_strictly_ymm(regno))                 reg_sz = 32;
-    else if (reg_is_strictly_zmm(regno))                 reg_sz = 64;
-    else if (reg_is_opmask(regno))                       reg_sz = 8;
-    else if (regno >= DR_REG_R8 && regno <= DR_REG_R15)  reg_sz = 8;
-    else {
-        reg_sz = MAX_REG_SZ;
-        dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
-    }
+    opnd_size_t reg_sz = reg_get_size(regno);
 
     if (reg_is_opmask(regno)) {
         // Get current opmask value
@@ -395,47 +377,6 @@ static void read_instr_reg_state(app_pc instr_addr) {
     }
 }
 
-// static void read_reg_state(int reg) {
-//     void *drcontext = dr_get_current_drcontext();
-//     dr_mcontext_t mcontext;
-//     mcontext.size = sizeof(mcontext);
-//     mcontext.flags = DR_MC_ALL;
-//     dr_get_mcontext(drcontext, &mcontext);
-
-//     #define MAX_REG_SZ 64
-
-//     // if buffer remains 0xabababababab... after register value then reading probably failed
-//     // for simplicity, we allocate MAX_REG_SZ for each register, even if the register size is smaller
-//     byte reg_buf[MAX_REG_SZ];
-//     memset(reg_buf, 0xab, sizeof(reg_buf));
-
-//     bool get_reg_value_ok = true;
-//     get_reg_value_ok = reg_get_value_ex(reg, &mcontext, &reg_buf);
-
-//     if (!get_reg_value_ok) {
-//         dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[reg]);
-//     } else {
-//         int reg_off = 0;
-//         int reg_sz = -1;
-//         if (reg_is_strictly_xmm(reg))                   reg_sz = 16;
-//         if (reg_is_strictly_ymm(reg))                   reg_sz = 32;
-//         if (reg_is_strictly_zmm(reg))                   reg_sz = 64;
-//         if (reg_is_opmask(reg))                         reg_sz = 8;
-//         if (reg >= DR_REG_R8 && reg <= DR_REG_R15)  reg_sz = 8;
-//         if (reg_sz == -1) {
-//             reg_sz = MAX_REG_SZ;
-//             dr_fprintf(STDERR, "WARNING: unknown reg size, may contain garbage.\n");
-//         }
-
-//         dr_fprintf(STDOUT, "%s: ", reg_names[reg]);
-//         for (int k = reg_off; k < reg_off + reg_sz; ++k) {
-//             dr_fprintf(STDOUT, "%02x", reg_buf[k]);
-//         }
-//         dr_fprintf(STDOUT, "\n");
-//     }
-// }
-
-
 // static void
 // clobber_avx512_state()
 // {
@@ -486,10 +427,6 @@ static void read_instr_reg_state(app_pc instr_addr) {
 //     __asm__ __volatile__("kmovw %0, %%k6" : : "m"(buf));
 //     __asm__ __volatile__("kmovw %0, %%k7" : : "m"(buf));
 // }
-
-
-
-#define MAX_NUM_REGS_READ 32
 
 /* This is called separately for each instruction in the block. */
 static dr_emit_flags_t
