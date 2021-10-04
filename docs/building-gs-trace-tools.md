@@ -3,11 +3,17 @@ These instructions were tested on an Ubuntu 18.04 server with Cascade Lake CPU.
 We use three different repositories to demonstrate how to build this trace tool for 1) validation with Spatter 
 and 2) for use with other applications. 
 
-* [DynamoRio repository]()
-* [Spatter G/S Benchmark suite]()
+* This repository
+* [DynamoRio repository](https://github.com/DynamoRIO/dynamorio)
+* [Spatter G/S Benchmark suite](https://github.com/hpcgarage/spatter)
 
 
 ### Download Tools and Repos
+
+Clone this repository
+```
+working_dir $git clone https://github.com/hpcgarage/dr-gather-scatter-trace.git
+```
 
 Download latest version build of Dynamorio (Dynamorio-Linux). We used a nightly build.
 https://github.com/DynamoRIO/dynamorio/releases/tag/cronbuild-8.0.18895 
