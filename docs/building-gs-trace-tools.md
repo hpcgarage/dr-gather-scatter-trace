@@ -105,3 +105,36 @@ $ ./DynamoRIO-Linux-8.0.18895/bin64/drrun -noinject -c ./trace_analysis/client/b
 $ python3 ./trace_analysis/histogram/generate_histogram.py out.log
 ```
 
+
+## Deprecated Instructions
+
+#### Manual editing of DynamoRio config files (optional)
+**Note: This step is only needed if you are not using the patch above!**
+
+```
+$ vim DynamoRIO-Linux-8.0.18895/cmake/DynamoRIOConfig.cmake 
+```
+
+On line 533, comment out the lines which say
+```
+_DR_identify_clang() 
+#if (NOT CMAKE_COMPILER_IS_GNUCC) 
+#  # Our linker script is GNU-specific 
+#  message(FATAL_ERROR "DynamoRIO's CMake configuration only supports the GNU linker on Linux") 
+#endif (NOT CMAKE_COMPILER_IS_GNUCC) 
+```
+
+On line 1106, change that line that says 
+`target_link_libraries(${target} dynamorio)`
+to 
+`target_link_libraries(${target} LINK_PUBLIC dynamorio)` 
+
+One line 1490, update the line that says
+```
+if (NOT DynamoRIO_EXT_${extname}_NOLIB)
+          target_link_libraries(${target} ${extname})
+endif (NOT DynamoRIO_EXT_${extname}_NOLIB)
+```
+to 
+`target_link_libraries(${target} LINK_PUBLIC ${extname})`
+
