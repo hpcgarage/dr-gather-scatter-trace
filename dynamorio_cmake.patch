@@ -1,0 +1,34 @@
+--- DynamoRIOConfig.cmake.old	2021-10-01 16:13:04.836400394 -0400
++++ DynamoRIOConfig.cmake	2021-10-01 16:02:58.926231831 -0400
+@@ -528,10 +528,10 @@
+ 
+ if (UNIX)
+   _DR_identify_clang()
+-  if (NOT CMAKE_COMPILER_IS_GNUCC)
++  #if (NOT CMAKE_COMPILER_IS_GNUCC)
+     # Our linker script is GNU-specific
+-    message(FATAL_ERROR "DynamoRIO's CMake configuration only supports the GNU linker on Linux")
+-  endif (NOT CMAKE_COMPILER_IS_GNUCC)
++    #  message(FATAL_ERROR "DynamoRIO's CMake configuration only supports the GNU linker on Linux")
++    #endif (NOT CMAKE_COMPILER_IS_GNUCC)
+ else (UNIX)
+   if (NOT ${COMPILER_BASE_NAME} STREQUAL "cl")
+     # Our link flags are Microsoft-specific
+@@ -1103,7 +1103,7 @@
+   endif (UNIX)
+ 
+   # DynamoRIOTarget.cmake added the "dynamorio" imported target
+-  target_link_libraries(${target} dynamorio)
++  target_link_libraries(${target} LINK_PUBLIC dynamorio)
+ 
+   if (DEFINED DynamoRIO_RPATH)
+     set(use_rpath ${DynamoRIO_RPATH})
+@@ -1487,7 +1487,7 @@
+   endif ()
+ 
+   if (NOT DynamoRIO_EXT_${extname}_NOLIB)
+-	  target_link_libraries(${target} ${extname})
++	  target_link_libraries(${target} LINK_PUBLIC ${extname})
+   endif (NOT DynamoRIO_EXT_${extname}_NOLIB)
+ 
+   if ("${extname}" MATCHES "^droption$")
