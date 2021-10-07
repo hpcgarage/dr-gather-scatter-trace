@@ -2,6 +2,19 @@
 
 ## Application tracing with the dr-gather-scatter-trace tool
 
+If you want to scope the application using DynamoRio tracing, 
+
+```
+dr_app_setup_and_start();
+dr_app_stop_and_cleanup();
+OR 
+dr_app_setup();
+dr_app_start();
+dr_app_stop();
+dr_app_start();
+dr_app_stop();
+dr_app_cleanup();
+```
 
 
 ## PENNANT Example
