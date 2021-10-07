@@ -42,3 +42,8 @@ export LD_LIBRARY_PATH=${DYNAMORIO_ROOT}/lib64/release:$LD_LIBRARY_PATH
 $ export OMP_NUM_THREADS=1
 $ ./DynamoRIO-Linux-8.0.18895/bin64/drrun -noinject -c ./dr-gather-scatter-trace/client/build/libcount_client.so -- ./PENNANT/build/pennant ./PENNANT/test/sedovflat/sedovflat_1920.pnt &> pennant_sedovflat_1920.out
 ```
+
+Run the histogram tool to pull out specific patterns (note this is the slow bit!)
+```
+
+```
