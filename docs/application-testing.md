@@ -2,7 +2,7 @@
 
 ## Application tracing with the dr-gather-scatter-trace tool
 
-If you want to scope the application using DynamoRio tracing, 
+If you want to scope the application using DynamoRio commands, you can add any of the following commands to your code and include the appropriate header file.
 
 ```
 dr_app_setup_and_start();
