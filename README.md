@@ -10,7 +10,7 @@ Please read through the following documentation pages:
 ## Motivation for this Tool
 The figure here shows our current state-of-the-art (top) and our desired tool workflow (bottom). 
 
-![DR Trace Generator Overview](https://github.com/hpcgarage/dr-gather-scatter-trace/blob/main/docs/presentations/figs/dr-trace-generator-overview.png)
+![DR Trace Generator Overview](https://github.com/hpcgarage/dr-gather-scatter-trace/blob/main/docs/presentations/figs/dr-trace-generator-overview.png =800x400)
 
 ### Related Work
 * MODSIM21 [slides](https://github.com/hpcgarage/dr-gather-scatter-trace/blob/main/docs/presentations/young-etal-scatter-gather-analysis-slides-MODSIM-2021.pdf) and [poster](https://github.com/hpcgarage/dr-gather-scatter-trace/blob/main/docs/presentations/young-etal-gather-scatter-analysis-poster-MODSIM21.pdf) detailing this work
