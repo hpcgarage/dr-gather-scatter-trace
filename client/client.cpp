@@ -34,6 +34,11 @@
 // reads the register states of gather/scatter instructions and returns a count
 // of the number of times a value for a register appears for each gather/scatter type.
 
+// TODO convert c strings to cpp strings
+// TODO use cpp prints
+
+// TODO UPDATE dr client main TO GS CLIENT description
+
 #include "dr_api.h"
 #include "drmgr.h"
 #include "drx.h"
@@ -119,7 +124,6 @@ static unordered_map <string, unordered_map <string, unordered_map <string, unsi
 static void event_exit(void);
 static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr, bool for_trace, bool translating, void *user_data);
 
-// TODO UPDATE TO GS CLIENT
 DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     dr_set_client_name("DynamoRIO Sample Client 'opcodes'", "http://dynamorio.org/issues");
     if (!drmgr_init())
@@ -199,13 +203,7 @@ static void read_instr_reg_state(app_pc instr_addr) {
         dr_fprintf(STDERR, "ERROR UNABLE TO DECODE INSTRUCTION\n");
         return;
     }
-
-    opnd_t opnd;
     DR_ASSERT(instr_operands_valid(&instr));
-
-
-    string opcode_name(decode_opcode_name(instr_get_opcode(&instr)));
-    // dr_fprintf(STDOUT, "\nInstruction %s Register State:\n", opcode_name);
 
     byte reg_buf[MAX_REG_SZ * MAX_NUM_REGS];
     int regno_buf[MAX_NUM_REGS];
@@ -218,7 +216,7 @@ static void read_instr_reg_state(app_pc instr_addr) {
     // for simplicity, we allocate MAX_REG_SZ for each register, even if the register size is smaller
     memset(reg_buf, 0xab, sizeof(reg_buf));
 
-
+    opnd_t opnd;
     for (int i = 0; i < instr_num_dsts(&instr); i++) {
         opnd = instr_get_dst(&instr, i);
         if (opnd_is_reg(opnd)) {
@@ -250,6 +248,7 @@ static void read_instr_reg_state(app_pc instr_addr) {
         }
     }
 
+    string opcode_name(decode_opcode_name(instr_get_opcode(&instr)));
     for (int i = 0; i < num_regs_read; i++) {
         opnd_size_t reg_sz = reg_get_size(regno_buf[i]);
         ostringstream os;
@@ -259,20 +258,12 @@ static void read_instr_reg_state(app_pc instr_addr) {
         }
         string val_str = os.str();
 
-        #ifdef SHOW_RESULTS
-        // dr_fprintf(STDOUT, "%s %s %s %s\n", opcode_name.c_str(), reg_desc_buf[i].c_str(), reg_name.c_str(), val_str.c_str());
-        #endif
-
         if (count_map[opcode_name][reg_name].find(val_str) == count_map[opcode_name][reg_name].end()) {
             count_map[opcode_name][reg_name][val_str] = 1;
         } else {
             count_map[opcode_name][reg_name][val_str] += 1;
         }
     }
-
-    #ifdef SHOW_RESULTS
-    // dr_fprintf(STDOUT, "\n");
-    #endif
 }
 
 /* This is called separately for each instruction in the block. */
@@ -293,19 +284,8 @@ static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrli
          * overhead.
          */
         for (ins = instrlist_first_app(bb); ins != NULL; ins = instr_get_next_app(ins)) {
-            /* We insert all increments sequentially up front so that drx can
-             * optimize the spills and restores.
-             */
             if (instr_is_scatter(ins) || instr_is_gather(ins)) {
                 dr_insert_clean_call(drcontext, bb, ins, (void *)read_instr_reg_state, false, 1, OPND_CREATE_INTPTR(instr_get_app_pc(ins)));
-                // dr_insert_clean_call(drcontext, bb, ins, (void *)clobber_avx512_state, false, 0);
-                // drx_insert_counter_update(drcontext, bb, instr,
-                //     // We're using drmgr, so these slots here won't be used: drreg's slots will be.
-                //     static_cast<dr_spill_slot_t>(SPILL_SLOT_MAX + 1),
-                //     IF_AARCHXX_(SPILL_SLOT_MAX + 1) & count[isa_idx][instr_get_opcode(ins)],
-                //     1,
-                //     // DRX_COUNTER_LOCK is not yet supported on ARM
-                //     IF_X86_ELSE(DRX_COUNTER_LOCK, 0));
             }
 	    }
     }
