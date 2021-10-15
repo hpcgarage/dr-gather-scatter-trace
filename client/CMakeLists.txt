@@ -10,7 +10,7 @@ if (NOT DynamoRIO_FOUND)
 	message(FATAL_ERROR "fatal: could not find dynamorio")
 endif()
 
-add_library(count_client SHARED client.cpp client_tools.h avx512ctx-shared.h detach_state_shared.h)
+add_library(count_client SHARED client.cpp)
 #set(DynamoRIO_FAST_IR ON)
 configure_DynamoRIO_client(count_client)
 
