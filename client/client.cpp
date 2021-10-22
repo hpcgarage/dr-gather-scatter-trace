@@ -52,6 +52,9 @@
 #include <ios>
 #include <sstream>
 #include <iostream>
+#include <vector>
+
+#define COUNT_DELTA
 
 using namespace std;
 
@@ -118,8 +121,27 @@ const char *const reg_names[] = {
 // key: dynamorio instruction opcode name
 // val: map with key: dynamorio register name
 //               val: map with key: value of register
-//                             val: number of occurences of that value
+//                             val: number of occurrences of that value
+#ifdef COUNT_FREQ
 static unordered_map <string, unordered_map <string, unordered_map <string, unsigned long long>>> count_map;
+#endif
+
+
+// key: dynamorio instruction opcode name
+// val: map with key: dynamorio register name
+//               val: vector of PattenStructs, where the last element in the
+//                    vector is the most recent
+#ifdef COUNT_DELTA
+struct PatternStruct {
+    vector<byte> delta_to_previous_pattern;
+    vector<byte> init_val;
+    vector<byte> prev_val;
+    vector<byte> delta;
+    bool delta_is_negative;
+    unsigned long long num_occurrences = 0;
+};
+static unordered_map <string, unordered_map <string, vector <PatternStruct>>> pattern_map;
+#endif
 
 static void event_exit(void);
 static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr, bool for_trace, bool translating, void *user_data);
@@ -149,14 +171,40 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
 #endif
 }
 
+static string byte_vector_str(vector<byte> v) {
+    ostringstream os;
+    for (int i = 0; i < v.size(); ++i) {
+        os << hex(v[i]);
+    }
+    return os.str();
+}
+
 static void event_exit(void) {
 #ifdef SHOW_RESULTS
+#ifdef COUNT_FREQ
     for (auto const &opcode_entry : count_map) {
         cout << opcode_entry.first << endl;
         for (auto const &reg_entry : opcode_entry.second) {
             cout << "    " << reg_entry.first << endl;
             for (auto const &regval_entry : reg_entry.second) {
                 cout << "        " << regval_entry.first << ":\t " << regval_entry.second << endl;
+            }
+        }
+    }
+#endif //COUNT_FREQ
+
+#ifdef COUNT_DELTA
+#endif //COUNT_DELTA
+    for (auto const &opcode_entry : pattern_map) {
+        cout << opcode_entry.first << endl;
+        for (auto const &reg_entry : opcode_entry.second) {
+            cout << "    " << reg_entry.first << endl;
+            for (auto const &regval_entry : reg_entry.second) {
+                cout << "            " << byte_vector_str(regval_entry.delta_to_previous_pattern) << endl;
+                cout << "            " << byte_vector_str(regval_entry.init_val) << endl;
+                cout << "            " << byte_vector_str(regval_entry.delta) << endl;
+                cout << "            " << regval_entry.num_occurrences << endl;
+                cout << endl;
             }
         }
     }
@@ -188,6 +236,50 @@ static int read_reg (int regno, byte (&reg_buf)[REG_BUF_SZ], int (&regno_buf)[MA
     }
 }
 
+static vector<byte> calc_delta(vector<byte> v1, vector<byte> v2, bool &is_negative) {
+    // TODO check edianness
+    // TODO make this subtraction algorithm not dumb and bad
+    is_negative = false;
+    int carryover = 0;
+    vector<byte> delta;
+    for (int j = v1.size()-1; j >= 0; j--) {
+        int diff = static_cast<int>(v1[j]) - static_cast<int>(v2[j]);
+        if (carryover > 0) {
+            diff -= 1;
+            carryover = 0;
+        }
+        if (diff < 0) {
+            diff += 256; // 16^2
+            carryover = 1;
+        }
+        if (diff < 0 || diff > 255)
+            DR_ASSERT(false);
+
+        delta.insert(delta.begin(), static_cast<byte>(diff));
+    }
+
+    if (carryover > 0) {
+        is_negative = true;
+        carryover = 0;
+        delta.clear();
+        for (int j = v1.size()-1; j >= 0; j--) {
+            int diff = static_cast<int>(v1[j]) - static_cast<int>(v2[j]);
+            if (carryover > 0) {
+                diff -= 1;
+                carryover = 0;
+            }
+            if (diff < 0) {
+                diff += 256; // 16^2
+                carryover = 1;
+            }
+            if (diff < 0 || diff > 255)
+                DR_ASSERT(false);
+
+            delta.insert(delta.begin(), static_cast<byte>(diff));
+        }
+    }
+    return delta;
+}
 
 static void read_instr_reg_state(app_pc instr_addr) {
     void *drcontext = dr_get_current_drcontext();
@@ -249,21 +341,76 @@ static void read_instr_reg_state(app_pc instr_addr) {
     }
 
     string opcode_name(decode_opcode_name(instr_get_opcode(&instr)));
+
+    #ifdef COUNT_FREQ
     for (int i = 0; i < num_regs_read; i++) {
         opnd_size_t reg_sz = reg_get_size(regno_buf[i]);
         ostringstream os;
         string reg_name(reg_names[regno_buf[i]]);
+
         for (int j = i * MAX_REG_SZ; j < i * MAX_REG_SZ + reg_sz; j++) {
             os << hex(reg_buf[j]);
         }
-        string val_str = os.str();
 
+        string val_str = os.str();
         if (count_map[opcode_name][reg_name].find(val_str) == count_map[opcode_name][reg_name].end()) {
             count_map[opcode_name][reg_name][val_str] = 1;
         } else {
             count_map[opcode_name][reg_name][val_str] += 1;
         }
     }
+    #endif //COUNT_FREQ
+
+    #ifdef COUNT_DELTA
+    for (int i = 0; i < num_regs_read; i++) {
+        opnd_size_t reg_sz = reg_get_size(regno_buf[i]);
+        string reg_name(reg_names[regno_buf[i]]);
+        vector<byte> reg_val;
+
+        for (int j = i * MAX_REG_SZ; j < i * MAX_REG_SZ + reg_sz; j++) {
+            reg_val.push_back(reg_buf[j]);
+        }
+
+        if (pattern_map[opcode_name][reg_name].empty()) { // if this is the first time a reg is encountered
+            struct PatternStruct ps;
+            ps.delta_to_previous_pattern = vector<byte>(reg_val.size(), 0);
+            ps.init_val = reg_val;
+            ps.prev_val = reg_val;
+            ps.num_occurrences = 0;
+            pattern_map[opcode_name][reg_name].push_back(ps);
+        } else {
+            // calculate delta
+            struct PatternStruct &curr_pattern = pattern_map[opcode_name][reg_name].back();
+
+            // if curr_pattern.num_occurrences == 0 then previous entry was start of delta pattern
+            vector<byte> &prev_val = curr_pattern.prev_val;
+            vector<byte> &next_val = reg_val;
+
+            // Since it's the same register, all register values should be the same size
+            if (prev_val.size() != next_val.size())
+                DR_ASSERT(false);
+
+            bool is_negative = false;
+            vector<byte> delta = calc_delta(prev_val, next_val, is_negative);
+
+            if (curr_pattern.num_occurrences == 0 || (curr_pattern.delta == delta && curr_pattern.delta_is_negative == is_negative)) {
+                curr_pattern.prev_val = reg_val;
+                curr_pattern.delta = delta;
+                curr_pattern.delta_is_negative = is_negative;
+                curr_pattern.num_occurrences += 1;
+            } else {
+                struct PatternStruct ps;
+                ps.delta_to_previous_pattern = delta;
+                ps.init_val = reg_val;
+                ps.prev_val = reg_val;
+                // ps.delta = delta;
+                // ps.delta_is_negative = is_negative;
+                ps.num_occurrences = 0;
+                pattern_map[opcode_name][reg_name].push_back(ps);
+            }
+        }
+    }
+    #endif //COUNT_DELTA
 }
 
 /* This is called separately for each instruction in the block. */
@@ -287,7 +434,7 @@ static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrli
             if (instr_is_scatter(ins) || instr_is_gather(ins)) {
                 dr_insert_clean_call(drcontext, bb, ins, (void *)read_instr_reg_state, false, 1, OPND_CREATE_INTPTR(instr_get_app_pc(ins)));
             }
-	    }
+        }
     }
     return DR_EMIT_DEFAULT;
 }
