@@ -53,28 +53,16 @@
 #include <sstream>
 #include <iostream>
 #include <vector>
+#include <iomanip>
 
 #define COUNT_DELTA
+// #define PRINT_OCC
 
 using namespace std;
 
 #define MAX_REG_SZ 64       // Assumed maximum register size
 #define MAX_NUM_REGS 16     // Assumed maximum number of registers a single instruction can use
 #define REG_BUF_SZ MAX_REG_SZ * MAX_NUM_REGS
-
-// Taken from https://stackoverflow.com/questions/673240/how-do-i-print-an-unsigned-char-as-hex-in-c-using-ostream
-struct HexCharStruct {
-  unsigned char c;
-  HexCharStruct(unsigned char _c) : c(_c) { }
-};
-
-inline std::ostream& operator<<(std::ostream& o, const HexCharStruct& hs) {
-  return (o << std::hex << (int)hs.c);
-}
-
-inline HexCharStruct hex(unsigned char _c) {
-  return HexCharStruct(_c);
-}
 
 // copied from dynamorio core/ir/x86/encode.c
 const char *const reg_names[] = {
@@ -174,7 +162,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
 static string byte_vector_str(vector<byte> v) {
     ostringstream os;
     for (int i = 0; i < v.size(); ++i) {
-        os << hex(v[i]);
+        os << setfill('0') << setw(2);
+        os << hex << static_cast<int>(v[i]);
     }
     return os.str();
 }
@@ -194,7 +183,6 @@ static void event_exit(void) {
 #endif //COUNT_FREQ
 
 #ifdef COUNT_DELTA
-#endif //COUNT_DELTA
     for (auto const &opcode_entry : pattern_map) {
         cout << opcode_entry.first << endl;
         for (auto const &reg_entry : opcode_entry.second) {
@@ -202,12 +190,13 @@ static void event_exit(void) {
             for (auto const &regval_entry : reg_entry.second) {
                 cout << "            " << byte_vector_str(regval_entry.delta_to_previous_pattern) << endl;
                 cout << "            " << byte_vector_str(regval_entry.init_val) << endl;
-                cout << "            " << byte_vector_str(regval_entry.delta) << endl;
+                cout << "            " << (regval_entry.delta_is_negative ? "-" : "") << byte_vector_str(regval_entry.delta) << endl;
                 cout << "            " << regval_entry.num_occurrences << endl;
                 cout << endl;
             }
         }
     }
+#endif //COUNT_DELTA
 #endif /* SHOW_RESULTS */
 
     if (!drmgr_unregister_bb_insertion_event(event_app_instruction))
@@ -263,7 +252,7 @@ static vector<byte> calc_delta(vector<byte> v1, vector<byte> v2, bool &is_negati
         carryover = 0;
         delta.clear();
         for (int j = v1.size()-1; j >= 0; j--) {
-            int diff = static_cast<int>(v1[j]) - static_cast<int>(v2[j]);
+            int diff = static_cast<int>(v2[j]) - static_cast<int>(v1[j]);
             if (carryover > 0) {
                 diff -= 1;
                 carryover = 0;
@@ -342,35 +331,28 @@ static void read_instr_reg_state(app_pc instr_addr) {
 
     string opcode_name(decode_opcode_name(instr_get_opcode(&instr)));
 
-    #ifdef COUNT_FREQ
-    for (int i = 0; i < num_regs_read; i++) {
-        opnd_size_t reg_sz = reg_get_size(regno_buf[i]);
-        ostringstream os;
-        string reg_name(reg_names[regno_buf[i]]);
-
-        for (int j = i * MAX_REG_SZ; j < i * MAX_REG_SZ + reg_sz; j++) {
-            os << hex(reg_buf[j]);
-        }
-
-        string val_str = os.str();
-        if (count_map[opcode_name][reg_name].find(val_str) == count_map[opcode_name][reg_name].end()) {
-            count_map[opcode_name][reg_name][val_str] = 1;
-        } else {
-            count_map[opcode_name][reg_name][val_str] += 1;
-        }
-    }
-    #endif //COUNT_FREQ
-
-    #ifdef COUNT_DELTA
     for (int i = 0; i < num_regs_read; i++) {
         opnd_size_t reg_sz = reg_get_size(regno_buf[i]);
         string reg_name(reg_names[regno_buf[i]]);
         vector<byte> reg_val;
 
-        for (int j = i * MAX_REG_SZ; j < i * MAX_REG_SZ + reg_sz; j++) {
+        for (int j = i * MAX_REG_SZ + reg_sz - 1; j >= i * MAX_REG_SZ; --j) {
             reg_val.push_back(reg_buf[j]);
         }
 
+
+        #ifdef COUNT_FREQ
+        // We can't use a vector as a key in unordered map, so convert to string
+        string reg_val_str = byte_vector_str(reg_val);
+        if (count_map[opcode_name][reg_name].find(reg_val_str) == count_map[opcode_name][reg_name].end()) {
+            count_map[opcode_name][reg_name][reg_val_str] = 1;
+        } else {
+            count_map[opcode_name][reg_name][reg_val_str] += 1;
+        }
+        #endif //COUNT_FREQ
+
+
+        #ifdef COUNT_DELTA
         if (pattern_map[opcode_name][reg_name].empty()) { // if this is the first time a reg is encountered
             struct PatternStruct ps;
             ps.delta_to_previous_pattern = vector<byte>(reg_val.size(), 0);
@@ -403,14 +385,20 @@ static void read_instr_reg_state(app_pc instr_addr) {
                 ps.delta_to_previous_pattern = delta;
                 ps.init_val = reg_val;
                 ps.prev_val = reg_val;
-                // ps.delta = delta;
-                // ps.delta_is_negative = is_negative;
                 ps.num_occurrences = 0;
                 pattern_map[opcode_name][reg_name].push_back(ps);
             }
         }
+        #endif //COUNT_DELTA
+
+        #ifdef PRINT_OCC
+        cout << opcode_name << ":\t\t" << reg_name << ":\t\t" << byte_vector_str(reg_val) << endl;
+        #endif
     }
-    #endif //COUNT_DELTA
+
+    #ifdef PRINT_OCC
+    cout << endl;
+    #endif
 }
 
 /* This is called separately for each instruction in the block. */
