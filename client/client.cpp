@@ -396,6 +396,8 @@ static void read_instr_reg_state(app_pc instr_addr) {
         #endif
     }
 
+    instr_free(drcontext, &instr);
+
     #ifdef PRINT_OCC
     cout << endl;
     #endif
