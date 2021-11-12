@@ -126,6 +126,7 @@ struct PatternStruct {
     vector<byte> prev_val;
     vector<byte> delta;
     bool delta_is_negative;
+    bool is_dst; // if not dst, then assumed to be src
     unsigned long long num_occurrences = 0;
 };
 static unordered_map <string, unordered_map <string, vector <PatternStruct>>> pattern_map;
@@ -194,10 +195,11 @@ static void event_exit(void) {
             bool first_patt = true;
             for (auto const &regval_entry : reg_entry.second) {
                 cout << (first_patt ? "" : ",\n") << "            {" << endl;
-                cout << "                " << "\"delta_to_prev_patt\": \"" << byte_vector_str(regval_entry.delta_to_previous_pattern) << "\"," << endl;
-                cout << "                " << "\"patt_val\":            \"" << byte_vector_str(regval_entry.init_val) << "\"," << endl;
-                cout << "                " << "\"delta\":               \"" << (regval_entry.delta_is_negative ? "-" : "") << byte_vector_str(regval_entry.delta) << "\"," << endl;
-                cout << "                " << "\"num_occ\":             \"" << regval_entry.num_occurrences << "\"" << endl;
+                cout << "                " << "\"prev_dist\": \"" << byte_vector_str(regval_entry.delta_to_previous_pattern) << "\"," << endl;
+                cout << "                " << "\"patt_val\":  \"" << byte_vector_str(regval_entry.init_val) << "\"," << endl;
+                cout << "                " << "\"delta\":     \"" << (regval_entry.delta_is_negative ? "-" : "") << byte_vector_str(regval_entry.delta) << "\"," << endl;
+                cout << "                " << "\"num_occ\":   \"" << regval_entry.num_occurrences << "\"," << endl;
+                cout << "                " << "\"is_dst\":    \"" << (regval_entry.is_dst ? "true" : "false") << "\"" << endl;
                 cout << "            }";
                 first_patt = false;
             }
@@ -219,8 +221,7 @@ static void event_exit(void) {
 }
 
 static int read_reg (int regno, byte (&reg_buf)[REG_BUF_SZ], int (&regno_buf)[MAX_NUM_REGS],
-                    unordered_set <int> (&regno_set), string (&reg_desc_buf)[MAX_NUM_REGS],
-                    int &num_regs_read, bool &has_opmask) {
+                    unordered_set <int> (&regno_set), int &num_regs_read, bool &has_opmask) {
     if (reg_is_opmask(regno)) {
         if (has_opmask) {
             if (regno_set.find(regno) == regno_set.end()) {
@@ -232,7 +233,6 @@ static int read_reg (int regno, byte (&reg_buf)[REG_BUF_SZ], int (&regno_buf)[MA
     }
     if (regno_set.find(regno) == regno_set.end()) {
         regno_buf[num_regs_read] = regno;
-        reg_desc_buf[num_regs_read] = "DST REG";
         regno_set.insert(regno);
         num_regs_read++;
     }
@@ -301,8 +301,8 @@ static void read_instr_reg_state(app_pc instr_addr) {
 
     byte reg_buf[MAX_REG_SZ * MAX_NUM_REGS];
     int regno_buf[MAX_NUM_REGS];
+
     unordered_set <int> regno_set;
-    string reg_desc_buf[MAX_NUM_REGS];
     int num_regs_read = 0;
     bool has_opmask = false;
 
@@ -314,22 +314,24 @@ static void read_instr_reg_state(app_pc instr_addr) {
     for (int i = 0; i < instr_num_dsts(&instr); i++) {
         opnd = instr_get_dst(&instr, i);
         if (opnd_is_reg(opnd)) {
-            read_reg(opnd_get_reg(opnd), reg_buf, regno_buf, regno_set, reg_desc_buf, num_regs_read, has_opmask);
+            read_reg(opnd_get_reg(opnd), reg_buf, regno_buf, regno_set, num_regs_read, has_opmask);
         } else if (opnd_is_base_disp(opnd)) {
-            read_reg(opnd_get_base(opnd), reg_buf, regno_buf, regno_set, reg_desc_buf, num_regs_read, has_opmask);
-            read_reg(opnd_get_index(opnd), reg_buf, regno_buf, regno_set, reg_desc_buf, num_regs_read, has_opmask);
+            read_reg(opnd_get_base(opnd), reg_buf, regno_buf, regno_set, num_regs_read, has_opmask);
+            read_reg(opnd_get_index(opnd), reg_buf, regno_buf, regno_set, num_regs_read, has_opmask);
         } else {
             dr_fprintf(STDERR, "UNKNOWN DESTINATION PARAM TYPE, SKIPPING\n");
         }
     }
 
+    int src_begin_idx = num_regs_read; // Index of where src regs in bufs begin
+
     for (int i = 0; i < instr_num_srcs(&instr); i++) {
         opnd = instr_get_src(&instr, i);
         if (opnd_is_reg(opnd)) {
-            read_reg(opnd_get_reg(opnd), reg_buf, regno_buf, regno_set, reg_desc_buf, num_regs_read, has_opmask);
+            read_reg(opnd_get_reg(opnd), reg_buf, regno_buf, regno_set, num_regs_read, has_opmask);
         } else if (opnd_is_base_disp(opnd)) {
-            read_reg(opnd_get_base(opnd), reg_buf, regno_buf, regno_set, reg_desc_buf, num_regs_read, has_opmask);
-            read_reg(opnd_get_index(opnd), reg_buf, regno_buf, regno_set, reg_desc_buf, num_regs_read, has_opmask);
+            read_reg(opnd_get_base(opnd), reg_buf, regno_buf, regno_set, num_regs_read, has_opmask);
+            read_reg(opnd_get_index(opnd), reg_buf, regno_buf, regno_set, num_regs_read, has_opmask);
         } else {
             dr_fprintf(STDERR, "UNKNOWN SOURCE PARAM TYPE, SKIPPING\n");
         }
@@ -372,6 +374,7 @@ static void read_instr_reg_state(app_pc instr_addr) {
             ps.init_val = reg_val;
             ps.prev_val = reg_val;
             ps.num_occurrences = 0;
+            ps.is_dst = i < src_begin_idx;
             pattern_map[opcode_name][reg_name].push_back(ps);
         } else {
             // calculate delta
@@ -382,13 +385,16 @@ static void read_instr_reg_state(app_pc instr_addr) {
             vector<byte> &next_val = reg_val;
 
             // Since it's the same register, all register values should be the same size
-            if (prev_val.size() != next_val.size())
+            if (prev_val.size() != next_val.size()) {
+                cout << "prev val " << prev_val.size() << " next val size " << next_val.size() << endl;
                 DR_ASSERT(false);
+            }
 
             bool is_negative = false;
             vector<byte> delta = calc_delta(prev_val, next_val, is_negative);
 
-            if (curr_pattern.num_occurrences == 0 || (curr_pattern.delta == delta && curr_pattern.delta_is_negative == is_negative)) {
+            if (curr_pattern.num_occurrences == 0 ||
+                (curr_pattern.delta == delta && curr_pattern.delta_is_negative == is_negative && curr_pattern.is_dst == (i < src_begin_idx))) {
                 curr_pattern.prev_val = reg_val;
                 curr_pattern.delta = delta;
                 curr_pattern.delta_is_negative = is_negative;
@@ -399,6 +405,7 @@ static void read_instr_reg_state(app_pc instr_addr) {
                 ps.init_val = reg_val;
                 ps.prev_val = reg_val;
                 ps.num_occurrences = 0;
+                ps.is_dst = i < src_begin_idx;
                 pattern_map[opcode_name][reg_name].push_back(ps);
             }
         }
