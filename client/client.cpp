@@ -56,7 +56,7 @@
 #include <iomanip>
 
 #define COUNT_DELTA
-// #define PRINT_OCC
+//#define PRINT_OCC
 
 using namespace std;
 
@@ -183,22 +183,35 @@ static void event_exit(void) {
 #endif //COUNT_FREQ
 
 #ifdef COUNT_DELTA
+    cout << "BEGIN JSON DATA" << endl;
+    cout << "{";
+    bool first_opcode = true;
     for (auto const &opcode_entry : pattern_map) {
-        cout << opcode_entry.first << endl;
+        cout << (first_opcode ? "" : ",\n") << "\"" << opcode_entry.first << "\": {" << endl;
+        bool first_reg = true;
         for (auto const &reg_entry : opcode_entry.second) {
-            cout << "    " << reg_entry.first << endl;
+            cout << (first_reg ? "" : ",\n") << "    \"" << reg_entry.first << "\": [" << endl;
+            bool first_patt = true;
             for (auto const &regval_entry : reg_entry.second) {
-                cout << "            " << byte_vector_str(regval_entry.delta_to_previous_pattern) << endl;
-                cout << "            " << byte_vector_str(regval_entry.init_val) << endl;
-                cout << "            " << (regval_entry.delta_is_negative ? "-" : "") << byte_vector_str(regval_entry.delta) << endl;
-                cout << "            " << regval_entry.num_occurrences << endl;
-                cout << endl;
+                cout << (first_patt ? "" : ",\n") << "            {" << endl;
+                cout << "                " << "\"delta_to_prev_patt\": \"" << byte_vector_str(regval_entry.delta_to_previous_pattern) << "\"," << endl;
+                cout << "                " << "\"patt_val\":            \"" << byte_vector_str(regval_entry.init_val) << "\"," << endl;
+                cout << "                " << "\"delta\":               \"" << (regval_entry.delta_is_negative ? "-" : "") << byte_vector_str(regval_entry.delta) << "\"," << endl;
+                cout << "                " << "\"num_occ\":             \"" << regval_entry.num_occurrences << "\"" << endl;
+                cout << "            }";
+                first_patt = false;
             }
+            cout << endl << "    ]";
+            first_reg = false;
         }
+        cout << "}";
+        first_opcode = false;
     }
+    cout << "}" << endl;
+    cout << "END JSON DATA" << endl;
 #endif //COUNT_DELTA
 #endif /* SHOW_RESULTS */
-
+    
     if (!drmgr_unregister_bb_insertion_event(event_app_instruction))
         DR_ASSERT(false);
     drx_exit();
