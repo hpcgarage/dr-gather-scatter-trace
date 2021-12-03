@@ -689,7 +689,7 @@ static void read_instr_reg_state1(app_pc instr_addr) {
             } else {
                 deque <PatternStruct> &patternDeque = pattern_map[opcode_name][index_reg_type];
                 if (patternDeque.size() > 1) {
-                    DR_ASSERT(patternDeque.size() - 2 == 0);
+                    // DR_ASSERT(patternDeque.size() - 2 == 0);
                     struct PatternStruct &prev_pattern = patternDeque[0];
                     if (prev_pattern.index_val == curr_pattern.index_val
                         && prev_pattern.base_delta == curr_pattern.base_delta
