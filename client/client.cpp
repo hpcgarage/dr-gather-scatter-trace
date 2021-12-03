@@ -53,10 +53,12 @@
 #include <sstream>
 #include <iostream>
 #include <vector>
+#include <deque>
 #include <iomanip>
 
+#define SPATTER_INP
 #define COUNT_DELTA
-//#define PRINT_OCC
+#define PRINT_OCC
 
 using namespace std;
 
@@ -121,16 +123,18 @@ static unordered_map <string, unordered_map <string, unordered_map <string, unsi
 //                    vector is the most recent
 #ifdef COUNT_DELTA
 struct PatternStruct {
-    vector<byte> delta_to_previous_pattern;
+    // vector<byte> delta_to_previous_pattern;
     vector<byte> init_val;
     vector<byte> prev_val;
     vector<byte> delta;
     bool delta_is_negative;
     bool is_dst; // if not dst, then assumed to be src
     unsigned long long num_occurrences = 0;
+    unsigned long long num_agg = 0;
 };
-static unordered_map <string, unordered_map <string, vector <PatternStruct>>> pattern_map;
+static unordered_map <string, unordered_map <string, deque <PatternStruct>>> pattern_map;
 #endif
+
 
 static void event_exit(void);
 static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr, bool for_trace, bool translating, void *user_data);
@@ -148,7 +152,6 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
 
     /* Make it easy to tell from the log file which client executed. */
     dr_log(NULL, DR_LOG_ALL, 1, "Client 'opcodes' initializing\n");
-#ifdef SHOW_RESULTS
     /* Also give notification to stderr. */
     if (dr_is_notify_on()) {
 #    ifdef WINDOWS
@@ -157,7 +160,6 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
 #    endif
         dr_fprintf(STDOUT, "Client opcodes is running\n");
     }
-#endif
 }
 
 static string byte_vector_str(vector<byte> v) {
@@ -170,7 +172,8 @@ static string byte_vector_str(vector<byte> v) {
 }
 
 static void event_exit(void) {
-#ifdef SHOW_RESULTS
+
+    
 #ifdef COUNT_FREQ
     for (auto const &opcode_entry : count_map) {
         cout << opcode_entry.first << endl;
@@ -184,6 +187,40 @@ static void event_exit(void) {
 #endif //COUNT_FREQ
 
 #ifdef COUNT_DELTA
+
+    for (auto const &opcode_entry : pattern_map) {
+        for (auto const &reg_entry : opcode_entry.second) {
+            const deque <PatternStruct> &patternDeque = reg_entry.second;
+            if (patternDeque.size() > 1) {
+                const struct PatternStruct &prev_pattern = patternDeque[patternDeque.size() - 2];
+                const struct PatternStruct &last_pattern = patternDeque[patternDeque.size() - 1];
+                if (prev_pattern.init_val == last_pattern.init_val &&
+                        prev_pattern.delta == last_pattern.delta &&
+                        prev_pattern.delta_is_negative == last_pattern.delta_is_negative &&
+                        prev_pattern.is_dst == last_pattern.is_dst &&
+                        prev_pattern.num_occurrences == last_pattern.num_occurrences) {
+                    pattern_map[opcode_entry.first][reg_entry.first][pattern_map[opcode_entry.first][reg_entry.first].size() - 2].num_agg += 1;
+                    pattern_map[opcode_entry.first][reg_entry.first].pop_back();
+                }
+            }
+        }
+    }
+
+    // #ifdef SPATTER_INP
+    // for (auto const &opcode_entry : pattern_map) {
+    //     string &opcode_name = opcode_entry.first;
+    //     deque <PatternStruct> &index_patt_vec = pattern_map[opcode_name][reg_names[index_regno]];
+    //     deque <PatternStruct> &base_patt_vec = pattern_map[opcode_name][reg_names[base_regno]];
+    //     cout << "opcode: " << opcode_name << " delta: " << byte_vector_str(base_patt_vec[0].delta) << " pattern: "
+    //             << byte_vector_str(index_patt_vec[0].init_val) << " length: " << base_patt_vec[0].num_occurrences
+    //             << " agg: " << base_patt_vec[0].num_agg << endl;
+
+    //     for (auto const &reg_entry : pattern_map[opcode_name]) {
+    //         pattern_map[opcode_name][reg_entry.first].pop_front();
+    //     }
+    // }
+    // #endif
+
     cout << "BEGIN JSON DATA" << endl;
     cout << "{";
     bool first_opcode = true;
@@ -193,12 +230,29 @@ static void event_exit(void) {
         for (auto const &reg_entry : opcode_entry.second) {
             cout << (first_reg ? "" : ",\n") << "    \"" << reg_entry.first << "\": [" << endl;
             bool first_patt = true;
+
+            const deque <PatternStruct> &patternDeque = reg_entry.second;
+
+            if (patternDeque.size() > 1) {
+                const struct PatternStruct &prev_pattern = patternDeque[patternDeque.size() - 2];
+                const struct PatternStruct &last_pattern = patternDeque[patternDeque.size() - 1];
+                if (prev_pattern.init_val == last_pattern.init_val &&
+                        prev_pattern.delta == last_pattern.delta &&
+                        prev_pattern.delta_is_negative == last_pattern.delta_is_negative &&
+                        prev_pattern.is_dst == last_pattern.is_dst &&
+                        prev_pattern.num_occurrences == last_pattern.num_occurrences) {
+                    pattern_map[opcode_entry.first][reg_entry.first][pattern_map[opcode_entry.first][reg_entry.first].size() - 2].num_agg += 1;
+                    pattern_map[opcode_entry.first][reg_entry.first].pop_back();
+                }
+            }
+
             for (auto const &regval_entry : reg_entry.second) {
                 cout << (first_patt ? "" : ",\n") << "            {" << endl;
-                cout << "                " << "\"prev_dist\": \"" << byte_vector_str(regval_entry.delta_to_previous_pattern) << "\"," << endl;
+                // cout << "                " << "\"prev_dist\": \"" << byte_vector_str(regval_entry.delta_to_previous_pattern) << "\"," << endl;
                 cout << "                " << "\"patt_val\":  \"" << byte_vector_str(regval_entry.init_val) << "\"," << endl;
                 cout << "                " << "\"delta\":     \"" << (regval_entry.delta_is_negative ? "-" : "") << byte_vector_str(regval_entry.delta) << "\"," << endl;
                 cout << "                " << "\"num_occ\":   \"" << regval_entry.num_occurrences << "\"," << endl;
+                cout << "                " << "\"num_agg\":   \"" << regval_entry.num_agg << "\"," << endl;
                 cout << "                " << "\"is_dst\":    \"" << (regval_entry.is_dst ? "true" : "false") << "\"" << endl;
                 cout << "            }";
                 first_patt = false;
@@ -212,7 +266,6 @@ static void event_exit(void) {
     cout << "}" << endl;
     cout << "END JSON DATA" << endl;
 #endif //COUNT_DELTA
-#endif /* SHOW_RESULTS */
     
     if (!drmgr_unregister_bb_insertion_event(event_app_instruction))
         DR_ASSERT(false);
@@ -346,6 +399,8 @@ static void read_instr_reg_state(app_pc instr_addr) {
 
     string opcode_name(decode_opcode_name(instr_get_opcode(&instr)));
 
+    bool finished_patt = false;
+
     for (int i = 0; i < num_regs_read; i++) {
         opnd_size_t reg_sz = reg_get_size(regno_buf[i]);
         string reg_name(reg_names[regno_buf[i]]);
@@ -370,10 +425,11 @@ static void read_instr_reg_state(app_pc instr_addr) {
         #ifdef COUNT_DELTA
         if (pattern_map[opcode_name][reg_name].empty()) { // if this is the first time a reg is encountered
             struct PatternStruct ps;
-            ps.delta_to_previous_pattern = vector<byte>(reg_val.size(), 0);
+            // ps.delta_to_previous_pattern = vector<byte>(reg_val.size(), 0);
             ps.init_val = reg_val;
             ps.prev_val = reg_val;
             ps.num_occurrences = 0;
+            ps.num_agg = 0;
             ps.is_dst = i < src_begin_idx;
             pattern_map[opcode_name][reg_name].push_back(ps);
         } else {
@@ -400,21 +456,73 @@ static void read_instr_reg_state(app_pc instr_addr) {
                 curr_pattern.delta_is_negative = is_negative;
                 curr_pattern.num_occurrences += 1;
             } else {
+                deque <PatternStruct> &patternDeque = pattern_map[opcode_name][reg_name];
+                if (patternDeque.size() > 1) {
+                    struct PatternStruct &prev_pattern = patternDeque[patternDeque.size() - 2];
+                    if (prev_pattern.init_val == curr_pattern.init_val &&
+                            prev_pattern.delta == curr_pattern.delta &&
+                            prev_pattern.delta_is_negative == curr_pattern.delta_is_negative &&
+                            prev_pattern.is_dst == curr_pattern.is_dst &&
+                            prev_pattern.num_occurrences == curr_pattern.num_occurrences) {
+                        prev_pattern.num_agg += 1;
+                        patternDeque.pop_back();
+                    } else {
+                        finished_patt = true;
+                    }
+                }
                 struct PatternStruct ps;
-                ps.delta_to_previous_pattern = delta;
+                // ps.delta_to_previous_pattern = delta;
                 ps.init_val = reg_val;
                 ps.prev_val = reg_val;
                 ps.num_occurrences = 0;
                 ps.is_dst = i < src_begin_idx;
-                pattern_map[opcode_name][reg_name].push_back(ps);
+                patternDeque.push_back(ps);
             }
         }
         #endif //COUNT_DELTA
 
         #ifdef PRINT_OCC
-        cout << opcode_name << ":\t\t" << reg_name << ":\t\t" << byte_vector_str(reg_val) << endl;
+        cout << opcode_name << ":\t\t" << (i < src_begin_idx ? "DST " : "SRC ") << reg_name << ":\t\t" << byte_vector_str(reg_val) << endl;
         #endif
     }
+
+    #ifdef SPATTER_INP
+    if (finished_patt) {
+        int base_regno = -1;
+        int index_regno = -1;
+        if (instr_is_scatter(&instr)) {
+            for (int i = 0; i < instr_num_dsts(&instr); i++) {
+                opnd = instr_get_dst(&instr, i);
+                if (opnd_is_base_disp(opnd)) {
+                    base_regno = opnd_get_base(opnd);
+                    index_regno = opnd_get_index(opnd);
+                }
+            }
+        } else {
+            for (int i = 0; i < instr_num_srcs(&instr); i++) {
+                opnd = instr_get_src(&instr, i);
+                if (opnd_is_base_disp(opnd)) {
+                    base_regno = opnd_get_base(opnd);
+                    index_regno = opnd_get_index(opnd);
+                }
+            }
+        }
+        if (base_regno == -1 || index_regno == -1) {
+            cout << "ERROR COULD NOT FIND BASE/IDX" << endl;
+        } else {
+            deque <PatternStruct> &index_patt_vec = pattern_map[opcode_name][reg_names[index_regno]];
+            deque <PatternStruct> &base_patt_vec = pattern_map[opcode_name][reg_names[base_regno]];
+            cout << "opcode: " << opcode_name << " delta: " << byte_vector_str(base_patt_vec[0].delta) << " pattern: "
+                 << byte_vector_str(index_patt_vec[0].init_val) << " length: " << base_patt_vec[0].num_occurrences
+                 << " agg: " << base_patt_vec[0].num_agg << endl;
+
+            for (auto const &reg_entry : pattern_map[opcode_name]) {
+                cout << "removing " << reg_entry.first << endl;
+                pattern_map[opcode_name][reg_entry.first].pop_front();
+            }
+        }
+    }
+    #endif
 
     instr_free(drcontext, &instr);
 
