@@ -126,6 +126,9 @@ enum IndexRegType {
 
 static unordered_map <string, vector<deque<PatternStruct>>> pattern_map;
 
+#define MIN_NUM_OCC 1 // minimum number of occurrences of the pattern for it to be printed
+// Note that a num_occ of x means the instruction has appeared x+1 times
+
 
 static void event_exit(void);
 static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr, bool for_trace, bool translating, void *user_data);
@@ -182,12 +185,14 @@ static void event_exit(void) {
                 }
 
                 PatternStruct &patt_struct = pattern_map[opcode_name][index_reg_type][0];
-                cout << "endopcode: " << opcode_name
-                    << " delta: " << (patt_struct.delta_is_negative ? "-" : "") << byte_vector_str(patt_struct.base_delta)
-                    << " pattern: " << byte_vector_str(patt_struct.index_val)
-                    << " length: " << patt_struct.num_occurrences
-                    << " agg: " << patt_struct.num_agg
-                    << endl;
+                if (patt_struct.num_occurrences >= MIN_NUM_OCC) {
+                    cout << "endopcode: " << opcode_name
+                        << " delta: " << (patt_struct.delta_is_negative ? "-" : "") << byte_vector_str(patt_struct.base_delta)
+                        << " pattern: " << byte_vector_str(patt_struct.index_val)
+                        << " length: " << patt_struct.num_occurrences
+                        << " agg: " << patt_struct.num_agg
+                        << endl;
+                }
             }
         }
     }
@@ -259,7 +264,6 @@ static vector<byte> calc_delta(vector<byte> v1, vector<byte> v2, bool &is_negati
     }
     return delta;
 }
-
 
 
 static void read_instr_reg_state(app_pc instr_addr) {
@@ -427,7 +431,7 @@ static void read_instr_reg_state(app_pc instr_addr) {
 
         if (pattern_end) {
             PatternStruct &patt_struct = pattern_map[opcode_name][index_reg_type][0];
-            if (patt_struct.num_occurrences > 0) { // nontrivial pattern
+            if (patt_struct.num_occurrences >= MIN_NUM_OCC) { // nontrivial pattern
                 cout << "opcode: " << opcode_name
                     << " delta: " << (patt_struct.delta_is_negative ? "-" : "") << byte_vector_str(patt_struct.base_delta)
                     << " pattern: " << byte_vector_str(patt_struct.index_val)
