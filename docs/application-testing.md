@@ -35,7 +35,7 @@ icpc -o build/pennant build/ExportGold.o build/Parallel.o build/WriteXY.o build/
 
 Run the code with the DynamoRio tool. 
 ```
-export LD_LIBRARY_PATH=${DYNAMORIO_ROOT}/lib64/release:$LD_LIBRARY_PATH
+$ export LD_LIBRARY_PATH=${DYNAMORIO_ROOT}/lib64/release:$LD_LIBRARY_PATH
 
 #   Remember to run with noinject since we are linking against libdynamorio to use trace delimiting!
 #   Also, we currently suggest running just with one thread.
