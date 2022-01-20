@@ -104,9 +104,9 @@ const char *const reg_names[] = {
     "bnd1",   "bnd2",  "bnd3",
 };
 
-// Required: MAX_PATTERN_QUEUE > MAX_PATTERN_PERIOD
-#define MAX_PATTERN_PERIOD 3
-#define MAX_PATTERN_QUEUE 10
+// Required: MAX_PATTERN_QUEUE > 2 * MAX_PATTERN_PERIOD
+#define MAX_PATTERN_PERIOD 20
+#define MAX_PATTERN_QUEUE 50
 
 struct BaseIndexTupleStruct {
     vector<byte> base;
@@ -119,14 +119,14 @@ struct BaseIndexTupleStruct {
 
 struct PatternStruct {
     // stores the first base + index value of the pattern
-    bool start_of_new_patt = true;
+    bool needs_first_instr = true;
     BaseIndexTupleStruct init;
 
     // stores the previous base + index values
     // used to calculate the delta from a new base + index to the previous
     BaseIndexTupleStruct prev;
 
-    // stores up to 2 * MAX_PATTERN_PERIOD + 1 deltas
+    // stores up to MAX_PATTERN_QUEUE deltas
     // if a pattern is not currently being matched, is used to find a pattern
     // if a pattern is currently being matched, is used to store the deltas to attempt to match
     deque<BaseIndexTupleStruct> delta_queue;
@@ -450,9 +450,9 @@ static void read_instr_reg_state(app_pc instr_addr) {
     curr_tup.base = base_reg_val;
     curr_tup.index = index_reg_val;
 
-    // fill delta queue
-    if (ps.start_of_new_patt) {
-        ps.start_of_new_patt = false;
+    // need first instruction to begin calculating deltas
+    if (ps.needs_first_instr) {
+        ps.needs_first_instr = false;
         ps.prev = curr_tup;
         ps.init = curr_tup;
         instr_free(drcontext, &instr);
@@ -470,7 +470,7 @@ static void read_instr_reg_state(app_pc instr_addr) {
             // cout << endl << "printing pattern occurrences..." << endl;
             print_pattern(ps, opcode_name);
             // cout << "mismatch! resetting..." << endl;
-            ps.start_of_new_patt = true;
+            // ps.needs_first_instr = true;
             ps.patt.clear();
             ps.num_occurrences = 0;
         }
