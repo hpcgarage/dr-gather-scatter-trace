@@ -30,20 +30,12 @@
  * DAMAGE.
  */
 
-// TODO DOCUMENTATION
-// reads the register states of gather/scatter instructions and returns a count
-// of the number of times a value for a register appears for each gather/scatter type.
-
-// TODO convert c strings to cpp strings
-// TODO use cpp prints
-
-// TODO UPDATE dr client main TO GS CLIENT description
-
 #include "dr_api.h"
 #include "drmgr.h"
 #include "drx.h"
 #include "client_tools.h"
 #include "avx512ctx-shared.h"
+#include <bits/stdc++.h>
 #include <stdlib.h> /* qsort */
 #include <string.h>
 #include <string>
@@ -57,6 +49,8 @@
 #include <iomanip>
 
 using namespace std;
+
+// #define PRINT_PATTERN
 
 #define MAX_REG_SZ 64       // Assumed maximum register size
 #define MAX_NUM_REGS 16     // Assumed maximum number of registers a single instruction can use
@@ -150,15 +144,12 @@ enum IndexRegType {
 // map from (dynamorio instruction opcode name string) to (vector of size NUM_INDEX_REG_TYPES containing PatternStruct)
 static unordered_map <string, vector<PatternStruct>> pattern_map;
 
-#define MIN_NUM_OCC 1 // minimum number of occurrences of the pattern for it to be printed
-// Note that a num_occ of x means the instruction has appeared x+1 times
-
+static unordered_map <string, unsigned long long> pattern_count;
 
 static void event_exit(void);
 static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr, bool for_trace, bool translating, void *user_data);
 
 DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
-    dr_set_client_name("DynamoRIO Sample Client 'opcodes'", "http://dynamorio.org/issues");
     if (!drmgr_init())
         DR_ASSERT(false);
     drx_init();
@@ -168,15 +159,9 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     if (!drmgr_register_bb_instrumentation_event(NULL, event_app_instruction, NULL))
         DR_ASSERT(false);
 
-    /* Make it easy to tell from the log file which client executed. */
-    dr_log(NULL, DR_LOG_ALL, 1, "Client 'opcodes' initializing\n");
-    /* Also give notification to stderr. */
+    dr_log(NULL, DR_LOG_ALL, 1, "Client 'Gather Scatter Pattern Identification' initializing\n");
     if (dr_is_notify_on()) {
-#    ifdef WINDOWS
-        /* Ask for best-effort printing to cmd window.  Must be called at init. */
-        dr_enable_console_printing();
-#    endif
-        dr_fprintf(STDOUT, "Client opcodes is running\n");
+        dr_fprintf(STDOUT, "Client Gather Scatter Pattern Identification is running\n");
     }
 }
 
@@ -190,6 +175,7 @@ static string byte_vector_str(vector<byte> v) {
 }
 
 static void print_pattern(PatternStruct &ps, string opcode_name) {
+#ifdef PRINT_PATTERN
     if (ps.num_occurrences > 0) {
         cout << endl << "opcode: " << opcode_name << endl
         << "inital base: " << byte_vector_str(ps.init.base) << endl
@@ -201,6 +187,22 @@ static void print_pattern(PatternStruct &ps, string opcode_name) {
         }
         cout << "occurrences: " << ps.num_occurrences << endl << endl;
     }
+#endif
+}
+
+static void count_pattern(PatternStruct &ps, string opcode_name) {
+    if (ps.num_occurrences > 0) {
+        string count_key = "opcode: " + opcode_name + "\n";
+        for (int i = 0; i < ps.patt.size(); i++) {
+            count_key += to_string(i) + " base: "  + byte_vector_str(ps.patt[i].base)  + "\n"
+                       + to_string(i) + " index: " + byte_vector_str(ps.patt[i].index) + "\n";
+        }
+        pattern_count[count_key] += ps.num_occurrences;
+    }
+}
+
+bool sort_count_vector(const tuple<unsigned long long, string> &x, const tuple<unsigned long long, string> &y) {
+    return (get<0>(x) > get<0>(y));
 }
 
 static void event_exit(void) {
@@ -208,32 +210,18 @@ static void event_exit(void) {
         const string &opcode_name = opcode_entry.first;
         for (int index_reg_type = 0; index_reg_type < NUM_INDEX_REG_TYPES; index_reg_type++) {
             print_pattern(pattern_map[opcode_name][index_reg_type], opcode_name);
-            // deque<PatternStruct> &patternDeque = pattern_map[opcode_name][index_reg_type];
-            // if (!patternDeque.empty()) {
-            //     if (patternDeque.size() > 1) {
-            //         DR_ASSERT(patternDeque.size() == 2);
-            //         struct PatternStruct &prev_pattern = patternDeque[0];
-            //         struct PatternStruct &curr_pattern = patternDeque[1];
-            //         if (prev_pattern.index_val == curr_pattern.index_val
-            //             && prev_pattern.base_delta == curr_pattern.base_delta
-            //             && prev_pattern.delta_is_negative == curr_pattern.delta_is_negative
-            //             && prev_pattern.num_occurrences == curr_pattern.num_occurrences) {
-            //             prev_pattern.num_agg += 1;
-            //             patternDeque.pop_back();
-            //         }
-            //     }
-
-            //     PatternStruct &patt_struct = pattern_map[opcode_name][index_reg_type][0];
-            //     if (patt_struct.num_occurrences >= MIN_NUM_OCC) {
-            //         cout << "endopcode: " << opcode_name
-            //             << " delta: " << (patt_struct.delta_is_negative ? "-" : "") << byte_vector_str(patt_struct.base_delta)
-            //             << " pattern: " << byte_vector_str(patt_struct.index_val)
-            //             << " length: " << patt_struct.num_occurrences
-            //             << " agg: " << patt_struct.num_agg
-            //             << endl;
-            //     }
-            // }
+            count_pattern(pattern_map[opcode_name][index_reg_type], opcode_name);
         }
+    }
+
+    vector<tuple<unsigned long long, string>> count_vector;
+    for (auto const &pattern_hash_entry : pattern_count) {
+        count_vector.push_back(make_tuple(pattern_hash_entry.second, pattern_hash_entry.first));
+    }
+    sort(count_vector.begin(), count_vector.end(), sort_count_vector);
+
+    for (auto const &count_vector_entry : count_vector) {
+        cout << endl << get<1>(count_vector_entry) << "occurrences: " << get<0>(count_vector_entry) << endl;
     }
     
     if (!drmgr_unregister_bb_insertion_event(event_app_instruction))
@@ -369,11 +357,6 @@ static void read_instr_reg_state(app_pc instr_addr) {
     byte base_reg_buf[MAX_REG_SZ];
     byte index_reg_buf[MAX_REG_SZ];
 
-    // // if buffer remains 0xabababababab... after register value then reading probably failed
-    // // for simplicity, we allocate MAX_REG_SZ for each register, even if the register size is smaller
-    // memset(base_reg_buf, 0xab, sizeof(base_reg_buf));
-    // memset(index_reg_buf, 0xab, sizeof(index_reg_buf));
-
     opnd_t opnd;
     reg_id_t base_regno;
     reg_id_t index_regno;
@@ -437,12 +420,9 @@ static void read_instr_reg_state(app_pc instr_addr) {
         return;
     }
 
-    
-
     if (pattern_map[opcode_name].empty()) {
         pattern_map[opcode_name].resize(NUM_INDEX_REG_TYPES);
     }
-    // deque <PatternStruct> &reg_patt_deque = pattern_map[opcode_name][index_reg_type];
 
     PatternStruct &ps = pattern_map[opcode_name][index_reg_type];
 
@@ -461,16 +441,13 @@ static void read_instr_reg_state(app_pc instr_addr) {
 
     
     ps.delta_queue.push_back(calc_base_index_tuple_delta(curr_tup, ps.prev));
-    // cout << "push to dq, new size: " << ps.delta_queue.size() << endl;
     ps.prev = curr_tup;
 
     if (ps.patt.size() > 0 && ps.delta_queue.size() >= ps.patt.size()) {
         bool matched = match_patt(ps);
         if (!matched) {
-            // cout << endl << "printing pattern occurrences..." << endl;
             print_pattern(ps, opcode_name);
-            // cout << "mismatch! resetting..." << endl;
-            // ps.needs_first_instr = true;
+            count_pattern(ps, opcode_name);
             ps.patt.clear();
             ps.num_occurrences = 0;
         }
@@ -486,7 +463,6 @@ static void read_instr_reg_state(app_pc instr_addr) {
             //     cout << k << " base: " << byte_vector_str(ps.delta_queue[k].base) << endl;
             //     cout << k << " index: " << byte_vector_str(ps.delta_queue[k].index) << endl;
             // }
-
 
             int max_patt_len = 1;
             int max_patt_len_per = -1;
@@ -517,40 +493,18 @@ static void read_instr_reg_state(app_pc instr_addr) {
                 }
 
 
-                cout << "matched pattern!" << endl
-                    << "found: " << endl;
-                for (int k = 0; k < ps.patt.size(); k++) {
-                    cout << k << " base: " << byte_vector_str(ps.patt[k].base) << endl;
-                    cout << k << " index: " << byte_vector_str(ps.patt[k].index) << endl;
-                }
+                // cout << "matched pattern!" << endl
+                //     << "found: " << endl;
+                // for (int k = 0; k < ps.patt.size(); k++) {
+                //     cout << k << " base: " << byte_vector_str(ps.patt[k].base) << endl;
+                //     cout << k << " index: " << byte_vector_str(ps.patt[k].index) << endl;
+                // }
                 // cout << "found pattern in" << endl;
                 // for (int k = 0; k < ps.delta_queue.size(); k++) {
                 //     cout << k << " base: " << byte_vector_str(ps.delta_queue[k].base) << endl;
                 //     cout << k << " index: " << byte_vector_str(ps.delta_queue[k].index) << endl;
                 // }
             }
-                // for (int i = 0; i < patt_per; i++) {
-                //     if (ps.delta_queue[i].base != ps.delta_queue[i + patt_per].base || ps.delta_queue[i].index != ps.delta_queue[i + patt_per].index) {
-                //         break;
-                //     }
-                //     if (i == patt_per - 1) {
-                //         for (int j = 0; j < patt_per; j++) {
-                //             ps.patt.push_back(ps.delta_queue[j]);
-                //         }
-
-
-                //         cout << "matched pattern!" << endl
-                //             << "found: " << endl;
-                //         for (int k = 0; k < ps.patt.size(); k++) {
-                //             cout << k << " base: " << byte_vector_str(ps.patt[k].base) << endl;
-                //             cout << k << " index: " << byte_vector_str(ps.patt[k].index) << endl;
-                //         }
-                //     }
-                // }
-                // if (ps.patt.size() > 0) { // pattern has been found
-                //     break;
-                // }
-            
 
             // consume as many patterns as possible
             if (ps.patt.size() > 0) {
@@ -562,104 +516,10 @@ static void read_instr_reg_state(app_pc instr_addr) {
             }
         }
 
-        
-
         instr_free(drcontext, &instr);
         return;
 
     } // ps.num_occurrences == 0
-
-
-
-
-
-    // if (reg_patt_deque.empty()) { // if this is the first time a reg is encountered
-    //     struct PatternStruct ps;
-    //     ps.index_val = index_reg_val;
-    //     ps.base_prev_val = base_reg_val;
-    //     ps.num_occurrences = 0;
-    //     ps.num_agg = 0;
-    //     pattern_map[opcode_name][index_reg_type].push_back(ps);
-    // } else {
-    //     struct PatternStruct &curr_pattern = pattern_map[opcode_name][index_reg_type].back();
-    //     bool pattern_end = false;
-
-    //     if (curr_pattern.index_val == index_reg_val) { // continue pattern
-    //         // Since it's the same register, all register values should be the same size.
-    //         // If check fails, may be due to multithreading, which is not supported yet.
-    //         if (curr_pattern.base_prev_val.size() != base_reg_val.size()) {
-    //             // cout << "prev val " << prev_val.size() << " next val size " << next_val.size() << endl;
-    //             DR_ASSERT(false);
-    //         }
-
-    //         bool is_negative = false;
-    //         vector<byte> delta = calc_delta(curr_pattern.base_prev_val, base_reg_val, is_negative);
-
-    //         if (curr_pattern.num_occurrences == 0 || (curr_pattern.base_delta == delta && curr_pattern.delta_is_negative == is_negative)) {
-    //             curr_pattern.base_prev_val = base_reg_val;
-    //             curr_pattern.base_delta = delta;
-    //             curr_pattern.delta_is_negative = is_negative;
-    //             curr_pattern.num_occurrences += 1;
-    //         } else {
-    //             deque <PatternStruct> &patternDeque = pattern_map[opcode_name][index_reg_type];
-    //             if (patternDeque.size() > 1) {
-    //                 // DR_ASSERT(patternDeque.size() - 2 == 0);
-    //                 struct PatternStruct &prev_pattern = patternDeque[0];
-    //                 if (prev_pattern.index_val == curr_pattern.index_val
-    //                     && prev_pattern.base_delta == curr_pattern.base_delta
-    //                     && prev_pattern.delta_is_negative == curr_pattern.delta_is_negative
-    //                     && prev_pattern.num_occurrences == curr_pattern.num_occurrences) {
-    //                     prev_pattern.num_agg += 1;
-    //                     patternDeque.pop_back();
-    //                 } else {
-    //                     pattern_end = true;
-    //                 }
-    //             }
-                
-    //             struct PatternStruct ps;
-    //             ps.index_val = index_reg_val;
-    //             ps.base_prev_val = base_reg_val;
-    //             ps.num_occurrences = 0;
-    //             ps.num_agg = 0;
-    //             pattern_map[opcode_name][index_reg_type].push_back(ps);
-                
-    //         }
-    //     } else { // end of pattern
-    //         deque <PatternStruct> &patternDeque = pattern_map[opcode_name][index_reg_type];
-    //         if (patternDeque.size() > 1) {
-    //             struct PatternStruct &prev_pattern = patternDeque[0];
-    //             struct PatternStruct &curr_pattern = patternDeque[1];
-    //             if (prev_pattern.index_val == curr_pattern.index_val
-    //                 && prev_pattern.base_delta == curr_pattern.base_delta
-    //                 && prev_pattern.delta_is_negative == curr_pattern.delta_is_negative
-    //                 && prev_pattern.num_occurrences == curr_pattern.num_occurrences) {
-    //                 prev_pattern.num_agg += 1;
-    //                 patternDeque.pop_back();
-    //             }
-    //         }
-    //         pattern_end = true;
-
-    //         struct PatternStruct ps;
-    //         ps.index_val = index_reg_val;
-    //         ps.base_prev_val = base_reg_val;
-    //         ps.num_occurrences = 0;
-    //         ps.num_agg = 0;
-    //         pattern_map[opcode_name][index_reg_type].push_back(ps);
-    //     }
-
-    //     if (pattern_end) {
-    //         PatternStruct &patt_struct = pattern_map[opcode_name][index_reg_type][0];
-    //         if (patt_struct.num_occurrences >= MIN_NUM_OCC) { // nontrivial pattern
-    //             cout << "opcode: " << opcode_name
-    //                 << " delta: " << (patt_struct.delta_is_negative ? "-" : "") << byte_vector_str(patt_struct.base_delta)
-    //                 << " pattern: " << byte_vector_str(patt_struct.index_val)
-    //                 << " length: " << patt_struct.num_occurrences
-    //                 << " agg: " << patt_struct.num_agg
-    //                 << endl;
-    //         }
-    //         pattern_map[opcode_name][index_reg_type].pop_front();
-    //     }
-    // }
 
     instr_free(drcontext, &instr);
 }
@@ -671,7 +531,6 @@ static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrli
     drmgr_disable_auto_predication(drcontext, bb);
     if (drmgr_is_first_instr(drcontext, instr)) {
         instr_t *ins;
-        // uint isa_idx = get_count_isa_idx(drcontext);
 
         /* Normally looking ahead should be performed in the analysis event, but
          * here that would require storing the counts into an array passed in
