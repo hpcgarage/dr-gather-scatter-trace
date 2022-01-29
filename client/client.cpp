@@ -381,12 +381,14 @@ static void read_instr_reg_state(app_pc instr_addr) {
         }
     }
 
-    if (!reg_get_value_ex(base_regno, &mcontext, (byte*) base_reg_buf)) {
+    if (base_regno == 0) {
+        memset(base_reg_buf, 0, MAX_REG_SZ);
+    } else if (!reg_get_value_ex(base_regno, &mcontext, (byte*) base_reg_buf)) {
         dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[base_regno]);
         instr_free(drcontext, &instr);
         return;
     }
-    opnd_size_t base_reg_sz = reg_get_size(base_regno);
+    opnd_size_t base_reg_sz = base_regno == 0 ? 1 : reg_get_size(base_regno);
     string base_reg_name(reg_names[base_regno]);
     vector<byte> base_reg_val;
     for (int j = base_reg_sz - 1; j >= 0; --j) {
