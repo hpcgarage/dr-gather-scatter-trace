@@ -336,6 +336,22 @@ static bool match_patt(PatternStruct &ps) {
     return matched;
 }
 
+// reads a given regno into a vector
+// returns 0 if successful, non-zero otherwise
+static int read_reg_val(reg_id_t regno, vector<byte> &reg_val, dr_mcontext_t *mcontext) {
+    byte reg_buf[MAX_REG_SZ];
+    if (!reg_get_value_ex(regno, mcontext, (byte*) reg_buf)) {
+        dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[regno]);
+        return -1;
+    }
+
+    opnd_size_t reg_sz = reg_get_size(regno);
+    for (int j = reg_sz - 1; j >= 0; --j) {
+        reg_val.push_back(reg_buf[j]);
+    }
+    return 0;
+}
+
 
 static void read_instr_reg_state(app_pc instr_addr) {
     void *drcontext = dr_get_current_drcontext();
@@ -395,19 +411,58 @@ static void read_instr_reg_state(app_pc instr_addr) {
         base_reg_val.push_back(base_reg_buf[j]);
     }
 
-    if (!reg_get_value_ex(index_regno, &mcontext, (byte*) index_reg_buf)) {
+    // if (!reg_get_value_ex(index_regno, &mcontext, (byte*) index_reg_buf)) {
+    //     dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[index_regno]);
+    //     instr_free(drcontext, &instr);
+    //     return;
+    // }
+    // opnd_size_t index_reg_sz = reg_get_size(index_regno);
+    // string index_reg_name(reg_names[index_regno]);
+    vector<byte> index_reg_val;
+    // for (int j = index_reg_sz - 1; j >= 0; --j) {
+    //     index_reg_val.push_back(index_reg_buf[j]);
+    // }
+    
+    if (read_reg_val(index_regno, index_reg_val, &mcontext) != 0) {
         dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[index_regno]);
         instr_free(drcontext, &instr);
         return;
     }
-    opnd_size_t index_reg_sz = reg_get_size(index_regno);
-    string index_reg_name(reg_names[index_regno]);
-    vector<byte> index_reg_val;
-    for (int j = index_reg_sz - 1; j >= 0; --j) {
-        index_reg_val.push_back(index_reg_buf[j]);
-    }
 
     string opcode_name(decode_opcode_name(instr_get_opcode(&instr)));
+
+    // #ifdef PRINT_ALL_INSTR
+    // cout << "opcode: " << opcode_name << endl;
+    // byte base_reg_buf[MAX_REG_SZ];
+    // byte index_reg_buf[MAX_REG_SZ];
+
+    // opnd_t opnd;
+    // reg_id_t base_regno;
+    // reg_id_t index_regno;
+    // if (instr_is_scatter(&instr)) {
+    //     for (int i = 0; i < instr_num_dsts(&instr); i++) {
+    //         opnd = instr_get_dst(&instr, i);
+    //         if (opnd_is_base_disp(opnd)) {
+    //             base_regno = opnd_get_base(opnd);
+    //             index_regno = opnd_get_index(opnd);
+    //             break;
+    //         }
+    //     }
+    //     cout << "source: " << << endl;
+    //     cout << "dest base: "
+    //         << "dest idx: "
+    //         << "dest mask: "
+    // } else if (instr_is_gather(&instr)) {
+    //     for (int i = 0; i < instr_num_srcs(&instr); i++) {
+    //         opnd = instr_get_src(&instr, i);
+    //         if (opnd_is_base_disp(opnd)) {
+    //             base_regno = opnd_get_base(opnd);
+    //             index_regno = opnd_get_index(opnd);
+    //             break;
+    //         }
+    //     }
+    // }
+    // #endif
 
     IndexRegType index_reg_type;
     if (reg_is_strictly_xmm(index_regno)) {
