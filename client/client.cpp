@@ -372,10 +372,12 @@ static void read_instr_reg_state(app_pc instr_addr) {
 
     byte base_reg_buf[MAX_REG_SZ];
     byte index_reg_buf[MAX_REG_SZ];
+    byte mask_reg_buf[MAX_REG_SZ];
 
     opnd_t opnd;
     reg_id_t base_regno;
     reg_id_t index_regno;
+    reg_id_t mask_regno;
 
     if (instr_is_scatter(&instr)) {
         for (int i = 0; i < instr_num_dsts(&instr); i++) {
@@ -383,7 +385,8 @@ static void read_instr_reg_state(app_pc instr_addr) {
             if (opnd_is_base_disp(opnd)) {
                 base_regno = opnd_get_base(opnd);
                 index_regno = opnd_get_index(opnd);
-                break;
+            } else if (opnd_is_reg(opnd) && reg_is_opmask(opnd_get_reg(opnd))){
+                mask_regno = opnd_get_reg(opnd);
             }
         }
     } else if (instr_is_gather(&instr)) {
@@ -392,7 +395,8 @@ static void read_instr_reg_state(app_pc instr_addr) {
             if (opnd_is_base_disp(opnd)) {
                 base_regno = opnd_get_base(opnd);
                 index_regno = opnd_get_index(opnd);
-                break;
+            } else if (opnd_is_reg(opnd) && reg_is_opmask(opnd_get_reg(opnd))){
+                mask_regno = opnd_get_reg(opnd);
             }
         }
     }
@@ -404,11 +408,20 @@ static void read_instr_reg_state(app_pc instr_addr) {
         instr_free(drcontext, &instr);
         return;
     }
+
+    if (!reg_get_value_ex(mask_regno, &mcontext, (byte*) mask_reg_buf)) {
+        dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[mask_regno]);
+        instr_free(drcontext, &instr);
+        return;
+    }
+
     opnd_size_t base_reg_sz = base_regno == 0 ? 1 : reg_get_size(base_regno);
-    string base_reg_name(reg_names[base_regno]);
+    DR_ASSERT(base_regno == 0 || reg_get_size(base_regno) == reg_get_size(mask_regno));
+    // string base_reg_name(reg_names[base_regno]);
+
     vector<byte> base_reg_val;
     for (int j = base_reg_sz - 1; j >= 0; --j) {
-        base_reg_val.push_back(base_reg_buf[j]);
+        base_reg_val.push_back(base_reg_buf[j] & mask_reg_buf[j]);
     }
 
     // if (!reg_get_value_ex(index_regno, &mcontext, (byte*) index_reg_buf)) {
