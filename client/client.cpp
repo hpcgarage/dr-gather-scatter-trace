@@ -370,14 +370,9 @@ static void read_instr_reg_state(app_pc instr_addr) {
     }
     DR_ASSERT(instr_operands_valid(&instr));
 
-    byte base_reg_buf[MAX_REG_SZ];
-    byte index_reg_buf[MAX_REG_SZ];
-    byte mask_reg_buf[MAX_REG_SZ];
-
     opnd_t opnd;
     reg_id_t base_regno;
     reg_id_t index_regno;
-    reg_id_t mask_regno;
 
     if (instr_is_scatter(&instr)) {
         for (int i = 0; i < instr_num_dsts(&instr); i++) {
@@ -385,8 +380,6 @@ static void read_instr_reg_state(app_pc instr_addr) {
             if (opnd_is_base_disp(opnd)) {
                 base_regno = opnd_get_base(opnd);
                 index_regno = opnd_get_index(opnd);
-            } else if (opnd_is_reg(opnd) && reg_is_opmask(opnd_get_reg(opnd))){
-                mask_regno = opnd_get_reg(opnd);
             }
         }
     } else if (instr_is_gather(&instr)) {
@@ -395,47 +388,20 @@ static void read_instr_reg_state(app_pc instr_addr) {
             if (opnd_is_base_disp(opnd)) {
                 base_regno = opnd_get_base(opnd);
                 index_regno = opnd_get_index(opnd);
-            } else if (opnd_is_reg(opnd) && reg_is_opmask(opnd_get_reg(opnd))){
-                mask_regno = opnd_get_reg(opnd);
             }
         }
     }
 
-    if (base_regno == 0) {
-        memset(base_reg_buf, 0, MAX_REG_SZ);
-    } else if (!reg_get_value_ex(base_regno, &mcontext, (byte*) base_reg_buf)) {
-        dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[base_regno]);
-        instr_free(drcontext, &instr);
-        return;
-    }
-
-    if (!reg_get_value_ex(mask_regno, &mcontext, (byte*) mask_reg_buf)) {
-        dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[mask_regno]);
-        instr_free(drcontext, &instr);
-        return;
-    }
-
-    opnd_size_t base_reg_sz = base_regno == 0 ? 1 : reg_get_size(base_regno);
-    DR_ASSERT(base_regno == 0 || reg_get_size(base_regno) == reg_get_size(mask_regno));
-    // string base_reg_name(reg_names[base_regno]);
-
     vector<byte> base_reg_val;
-    for (int j = base_reg_sz - 1; j >= 0; --j) {
-        base_reg_val.push_back(base_reg_buf[j] & mask_reg_buf[j]);
+    if (base_regno == 0) {
+        base_reg_val.push_back(0);
+    } else if (read_reg_val(base_regno, base_reg_val, &mcontext) != 0) {
+        dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[index_regno]);
+        instr_free(drcontext, &instr);
+        return;
     }
 
-    // if (!reg_get_value_ex(index_regno, &mcontext, (byte*) index_reg_buf)) {
-    //     dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[index_regno]);
-    //     instr_free(drcontext, &instr);
-    //     return;
-    // }
-    // opnd_size_t index_reg_sz = reg_get_size(index_regno);
-    // string index_reg_name(reg_names[index_regno]);
-    vector<byte> index_reg_val;
-    // for (int j = index_reg_sz - 1; j >= 0; --j) {
-    //     index_reg_val.push_back(index_reg_buf[j]);
-    // }
-    
+    vector<byte> index_reg_val;    
     if (read_reg_val(index_regno, index_reg_val, &mcontext) != 0) {
         dr_fprintf(STDERR, "ERROR: problem reading %s value\n", reg_names[index_regno]);
         instr_free(drcontext, &instr);
