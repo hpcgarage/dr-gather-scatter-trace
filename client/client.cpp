@@ -52,9 +52,8 @@ using namespace std;
 
 #define PRINT_PATTERN
 
-#define MAX_REG_SZ 64       // Assumed maximum register size
-#define MAX_NUM_REGS 16     // Assumed maximum number of registers a single instruction can use
-#define REG_BUF_SZ MAX_REG_SZ * MAX_NUM_REGS
+// minimum number of occurrences of a pattern to print
+#define MIN_NUM_OCC 0
 
 // copied from dynamorio core/ir/x86/encode.c
 const char *const reg_names[] = {
@@ -168,7 +167,7 @@ static string byte_vector_str(vector<byte> v) {
 
 static void print_pattern(PatternStruct &patt) {
 #ifdef PRINT_PATTERN
-    if (patt.index_patt.size() > 0 && patt.base_delta_patt.size() > 0) {
+    if (patt.index_patt.size() > 0 && patt.base_delta_patt.size() > 0 && patt.num_occ > MIN_NUM_OCC) {
         cout << "index pattern:" << endl;
         for (int i = 0; i < patt.index_patt.size(); i++) {
             cout << patt.index_patt[i] << "\t";
@@ -200,7 +199,11 @@ static bool match_base_delta_pattern(PatternStruct &patt) {
                 last_complete_patt_idx = i+1;
             }
         }
-        if (last_complete_patt_idx - patt_per > max_patt_len) { //need to subtract pattern_per since it will always match itself
+        // if (last_complete_patt_idx - patt_per > max_patt_len) { //need to subtract pattern_per since it will always match itself
+        //     max_patt_len = last_complete_patt_idx;
+        //     max_patt_len_per = patt_per;
+        // }
+        if (last_complete_patt_idx > max_patt_len) { //need to subtract pattern_per since it will always match itself
             max_patt_len = last_complete_patt_idx;
             max_patt_len_per = patt_per;
         }
@@ -379,20 +382,45 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
                 patt.index_queue.clear();
             } else { // index queue mismatches index pattern
             // cout << "12" << endl;
+                // cout << "delta " << (unsigned long long) (patt.base_delta_queue[0]) << endl;
+                // cout << "prev base " << (unsigned long long) (patt.prev_base - patt.base_delta_queue[0]) << endl;
+                // cout << "base " << (unsigned long long) patt.prev_base << endl;
+                // cout << "index pattern:" << endl;
+                // for (int i = 0; i < patt.index_patt.size(); i++) {
+                //     cout << patt.index_patt[i] << "\t";
+                // }
+                // cout << endl;
+                // cout << "index queue:" << endl;
+                // for (int i = 0; i < patt.index_queue.size(); i++) {
+                //     cout << patt.index_queue[i] << "\t";
+                // }
+                // cout << endl << endl;
+
+                // if we have not yet found a pattern, empty the delta queue to find one
+                if (patt.base_delta_patt.size() == 0) {
+                    while (patt.base_delta_queue.size() > 0 && !match_base_delta_pattern(patt)) {
+                        patt.base_delta_queue.pop_front();
+                    }
+                }
+
                 // print out pattern, if one exists
                 print_pattern(patt);
+
                 // start new pattern
                 patt.base_delta_patt.clear();
                 patt.base_delta_queue.clear();
+
                 patt.num_occ = 0;
-                // patt.index_patt = patt.index_queue;
+                patt.index_patt = patt.index_queue;
                 patt.index_queue.clear();
-                patt.index_patt.clear();
+
+                // patt.index_patt.clear();
             }
 
-            if (!patt.no_prev_base) {
-                patt.base_delta_queue.push_back(base - patt.prev_base);
-            }
+            DR_ASSERT(!patt.no_prev_base);
+
+            patt.base_delta_queue.push_back(base - patt.prev_base);
+            // cout << "inserting delta " << (unsigned long long) (patt.base_delta_queue[0]) << endl << endl;
         }
 
         if (patt.no_prev_base) {
