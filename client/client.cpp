@@ -41,6 +41,7 @@
 #include <string>
 #include <unordered_set>
 #include <unordered_map>
+#include <map>
 #include <ios>
 #include <sstream>
 #include <iostream>
@@ -50,10 +51,10 @@
 
 using namespace std;
 
-#define PRINT_PATTERN
+// #define PRINT_PATTERN
 
 // minimum number of occurrences of a pattern to print
-#define MIN_NUM_OCC 0
+#define MIN_NUM_OCC 1
 
 // copied from dynamorio core/ir/x86/encode.c
 const char *const reg_names[] = {
@@ -111,7 +112,7 @@ struct PatternStruct {
     // null as a valid base register value, which indicates that the
     // base register value is 0.
     bool no_prev_base = true;
-    app_pc prev_base;
+    ptrdiff_t prev_base;
 
     // stores up to MAX_PATTERN_QUEUE deltas
     // if a pattern is not currently being matched, is used to find a pattern
@@ -129,13 +130,17 @@ struct PatternStruct {
     unsigned long long num_occ = 0;
 
     deque<ptrdiff_t> index_patt;
-    deque<ptrdiff_t> index_queue;
+    // deque<ptrdiff_t> index_queue;
 };
 
 // map from is_write (false if gather, true if scatter) to current pattern
 static unordered_map <bool, PatternStruct> pattern_map;
 
-static unordered_map <string, unsigned long long> pattern_count;
+// map from is_write
+//     to   map from    index_patt
+//              to      map from    base_delta_patt
+//                                  to deque of num_occ
+static unordered_map <bool, map<deque<ptrdiff_t>, map<deque<ptrdiff_t>, deque<unsigned long long>>>> pattern_count;
 
 static void event_exit(void);
 static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr, bool for_trace, bool translating, void *user_data);
@@ -156,18 +161,12 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     }
 }
 
-static string byte_vector_str(vector<byte> v) {
-    ostringstream os;
-    for (int i = 0; i < v.size(); ++i) {
-        os << setfill('0') << setw(2);
-        os << hex << static_cast<int>(v[i]);
-    }
-    return os.str();
-}
+static void print_pattern(bool is_write) {
 
-static void print_pattern(PatternStruct &patt) {
-#ifdef PRINT_PATTERN
-    if (patt.index_patt.size() > 0 && patt.base_delta_patt.size() > 0 && patt.num_occ > MIN_NUM_OCC) {
+    PatternStruct &patt = pattern_map[is_write];
+    if (patt.index_patt.size() > 0 && patt.base_delta_patt.size() > 0 && patt.num_occ >= MIN_NUM_OCC) {
+        #ifdef PRINT_PATTERN
+        cout << (is_write ? "scatter" : "gather") << endl;
         cout << "index pattern:" << endl;
         for (int i = 0; i < patt.index_patt.size(); i++) {
             cout << patt.index_patt[i] << "\t";
@@ -177,53 +176,47 @@ static void print_pattern(PatternStruct &patt) {
         for (int i = 0; i < patt.base_delta_patt.size(); i++) {
             cout << patt.base_delta_patt[i] << "\t";
         }
-        cout << "\nnum occurrences: " << patt.num_occ << endl;
+        cout << endl;
+        cout << "num occurrences: " << patt.num_occ << endl;
         cout << endl << endl;
+        #endif
+
+        pattern_count[is_write][patt.index_patt][patt.base_delta_patt].push_back(patt.num_occ);
     }
-#endif
+
 }
 
-static bool match_base_delta_pattern(PatternStruct &patt) {
-    int max_patt_len = 1;
-    int max_patt_len_per = -1;
-    for (int patt_per = 1; patt_per <= MAX_PATTERN_PERIOD; patt_per++) {
-        int patt_idx = 0;
-        int last_complete_patt_idx = -1;
-        for (int i = 0; i < patt.base_delta_queue.size(); i++) {
-            if (patt.base_delta_queue[patt_idx] != patt.base_delta_queue[i]) {
-                break;
+static bool match_base_delta_pattern(PatternStruct &patt, bool use_existing_pattern) {
+    if (!use_existing_pattern) {
+        int max_patt_len = 1;
+        int max_patt_len_per = -1;
+        for (int patt_per = 1; patt_per <= MAX_PATTERN_PERIOD; patt_per++) {
+            int patt_idx = 0;
+            int last_complete_patt_idx = -1;
+            for (int i = 0; i < patt.base_delta_queue.size(); i++) {
+                if (patt.base_delta_queue[patt_idx] != patt.base_delta_queue[i]) {
+                    break;
+                }
+                patt_idx += 1;
+                if (patt_idx >= patt_per) {
+                    patt_idx = 0;
+                    last_complete_patt_idx = i+1;
+                }
             }
-            patt_idx += 1;
-            if (patt_idx >= patt_per) {
-                patt_idx = 0;
-                last_complete_patt_idx = i+1;
+            if (last_complete_patt_idx - patt_per > max_patt_len) { //need to subtract pattern_per since it will always match itself
+                max_patt_len = last_complete_patt_idx;
+                max_patt_len_per = patt_per;
             }
         }
-        if (last_complete_patt_idx - patt_per > max_patt_len) { //need to subtract pattern_per since it will always match itself
-            max_patt_len = last_complete_patt_idx;
-            max_patt_len_per = patt_per;
+
+        if (max_patt_len_per > 0) {
+            DR_ASSERT(patt.base_delta_patt.size() == 0);
+            for (int i = 0; i < max_patt_len_per; i++) {
+                patt.base_delta_patt.push_back(patt.base_delta_queue[i]);
+            }
         }
     }
-
-    if (max_patt_len_per > 0) {
-        DR_ASSERT(patt.base_delta_patt.size() == 0);
-        for (int i = 0; i < max_patt_len_per; i++) {
-            patt.base_delta_patt.push_back(patt.base_delta_queue[i]);
-        }
-
-
-        // cout << "matched pattern!" << endl
-        //     << "found: " << endl;
-        // for (int k = 0; k < ps.patt.size(); k++) {
-        //     cout << k << " base: " << byte_vector_str(ps.patt[k].base) << endl;
-        //     cout << k << " index: " << byte_vector_str(ps.patt[k].index) << endl;
-        // }
-        // cout << "found pattern in" << endl;
-        // for (int k = 0; k < ps.delta_queue.size(); k++) {
-        //     cout << k << " base: " << byte_vector_str(ps.delta_queue[k].base) << endl;
-        //     cout << k << " index: " << byte_vector_str(ps.delta_queue[k].index) << endl;
-        // }
-    }
+    
 
     // consume as many patterns as possible
     if (patt.base_delta_patt.size() > 0) {
@@ -247,7 +240,8 @@ static bool match_base_delta_pattern(PatternStruct &patt) {
                 break;
             }
         }
-        DR_ASSERT(max_patt_len_per == -1 || matched);
+        DR_ASSERT(use_existing_pattern || matched);
+        DR_ASSERT(use_existing_pattern || patt.num_occ > 0);
         return true;
     } else {
         // if no pattern was found, pop first delta
@@ -259,10 +253,35 @@ static bool match_base_delta_pattern(PatternStruct &patt) {
 
 
 static void event_exit(void) {
-    match_base_delta_pattern(pattern_map[true]);
-    print_pattern(pattern_map[true]);
-    match_base_delta_pattern(pattern_map[false]);
-    print_pattern(pattern_map[false]);
+    // TODO while loop match
+    match_base_delta_pattern(pattern_map[true], true);
+    print_pattern(true);
+    match_base_delta_pattern(pattern_map[false], true);
+    print_pattern(false);
+
+    for (const auto& is_write_elem : pattern_count) {
+        for (const auto& index_patt_elem : is_write_elem.second) {
+            for (const auto& base_delta_patt_elem : index_patt_elem.second) {
+                cout << (is_write_elem.first ? "scatter" : "gather") << endl;
+                cout << "index patt" << endl;
+                for (int i = 0; i < index_patt_elem.first.size(); i++) {
+                    cout << index_patt_elem.first[i] << "\t";
+                }
+                cout << endl;
+                cout << "base deltas" << endl;
+                for (int i = 0; i < base_delta_patt_elem.first.size(); i++) {
+                    cout << base_delta_patt_elem.first[i] << "\t";
+                }
+                cout << endl;
+                cout << "occurrences" << endl;
+                for (int i = 0; i < base_delta_patt_elem.second.size(); i++) {
+                    cout << base_delta_patt_elem.second[i] << "\t";
+                }
+                cout << endl;
+                cout << endl << endl;
+            }
+        }
+    }
     
     if (!drmgr_unregister_bb_insertion_event(event_app_instruction))
         DR_ASSERT(false);
@@ -288,184 +307,78 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
     DR_ASSERT(instr_operands_valid(&instr));
 
     app_pc base = (app_pc) reg_get_value(base_regno, &mcontext);
+    ptrdiff_t base_diff = base - ((app_pc) 0);
     app_pc idx;
+    deque<ptrdiff_t> index_queue;
     uint ordinal = 0;
     bool is_write;
+
+    // get addresses accessed by gather/scatter
     while (instr_compute_address_ex(&instr, &mcontext, ordinal, &idx, &is_write)) {
-        PatternStruct &patt = pattern_map[is_write];
-
-        if (patt.no_prev_base) {
-            patt.prev_base = base;
-        }
-
-        if (base != patt.prev_base) { // base mismatch
-            // cout << "1" << endl;
-            
-            // for (int i = 0; i < patt.index_patt.size(); i++) {
-            //     cout << patt.index_patt[i] << "\t";
-            // }
-            // cout << endl;
-
-            // for (int i = 0; i < patt.index_queue.size(); i++) {
-            //     cout << patt.index_queue[i] << "\t";
-            // }
-            // cout << endl;
-
-            if (patt.index_patt.size() == 0) {
-                // cout << "2" << endl;
-                ptrdiff_t min_index = patt.index_queue[0];
-                for (int i = 1; i < patt.index_queue.size(); i++) {
-                    if (patt.index_queue[i] < min_index) {
-                        min_index = patt.index_queue[i];
-                    }
-                }
-                if (min_index != 0) {
-                    for (int i = 0; i < patt.index_queue.size(); i++) {
-                        patt.index_queue[i] -= min_index;
-                    }
-                    patt.prev_base += min_index;
-                }
-                patt.index_patt = patt.index_queue;
-                patt.index_queue.clear();
-                DR_ASSERT(patt.num_occ == 0);
-                // patt.base_delta_queue.push_back(base - patt.prev_base);
-            } else { // pattern index exists
-                ptrdiff_t min_index = patt.index_queue[0];
-                for (int i = 1; i < patt.index_queue.size(); i++) {
-                    if (patt.index_queue[i] < min_index) {
-                        min_index = patt.index_queue[i];
-                    }
-                }
-                if (min_index != 0) {
-                    for (int i = 0; i < patt.index_queue.size(); i++) {
-                        patt.index_queue[i] -= min_index;
-                    }
-                    patt.prev_base += min_index;
-                }
-                // todo what if base is now == prev base after adding?
-                DR_ASSERT(patt.prev_base != base);
-
-                if (patt.index_queue == patt.index_patt) { // index queue matches index pattern
-                    // cout << "3" << endl;
-                    // there is no current base delta pattern
-                    if (patt.base_delta_patt.size() == 0) {
-                        // cout << "5" << endl;
-                        if (patt.base_delta_queue.size() < MAX_PATTERN_QUEUE) { // base delta queue is not full
-                        // cout << "6" << endl;
-                            // patt.base_delta_queue.push_back(base - patt.prev_base);
-                        } else { // base delta queue is full
-                        // cout << "7" << endl;
-                            //pattern search algorithm
-
-                            // cout << "attempting to find pattern in" << endl;
-                            // for (int k = 0; k < ps.delta_queue.size(); k++) {
-                            //     cout << k << " base: " << byte_vector_str(ps.delta_queue[k].base) << endl;
-                            //     cout << k << " index: " << byte_vector_str(ps.delta_queue[k].index) << endl;
-                            // }
-
-                            if (!match_base_delta_pattern(patt)) {
-                                patt.base_delta_queue.pop_front();
-                            }
-                        }
-                        
-                    } else if (patt.base_delta_queue.size() < patt.base_delta_patt.size()) { // base delta queue is smaller than base delta pattern
-                    // cout << "8" << endl;
-                        // patt.base_delta_queue.push_back(base - patt.prev_base);
-                    } else { // base delta queue is same size as base delta pattern
-                    // cout << "9" << endl;
-                        DR_ASSERT(patt.base_delta_queue.size() == patt.base_delta_patt.size());
-
-                        // for (int i = 0; i < patt.base_delta_queue.size(); i++) {
-                        //     cout << patt.base_delta_queue[i] << "\t";
-                        // }
-                        // cout << endl;
-
-                        // for (int i = 0; i < patt.base_delta_patt.size(); i++) {
-                        //     cout << patt.base_delta_patt[i] << "\t";
-                        // }
-                        // cout << endl;
-
-                        // base delta queue matches base delta pattern
-                        if (patt.base_delta_queue == patt.base_delta_patt) {
-                            // cout << "10" << endl;
-                            patt.num_occ++;
-                            patt.base_delta_queue.clear();
-                        } else { // base delta queue mismatches base delta pattern
-                        // cout << "11" << endl;
-                            // print out pattern
-                            print_pattern(patt);
-                            // start new pattern
-                            patt.num_occ = 0;
-                            // do not clear base delta queue
-                            patt.base_delta_queue.pop_front();
-                        }
-                    }
-
-                    patt.index_queue.clear();
-                } else { // index queue mismatches index pattern
-                // cout << "12" << endl;
-                    // cout << "delta patt" << endl;
-                    // for (int i = 0; i < patt.base_delta_patt.size(); i++) {
-                    //     cout << (unsigned long) patt.base_delta_patt[i] << "\t";
-                    // }
-                    // cout << endl;
-                    // cout << "delta queue" << endl;
-                    // for (int i = 0; i < patt.base_delta_queue.size(); i++) {
-                    //     cout << (unsigned long) patt.base_delta_queue[i] << "\t";
-                    // }
-                    // cout << endl;
-                    // cout << "index pattern:" << endl;
-                    // for (int i = 0; i < patt.index_patt.size(); i++) {
-                    //     cout << patt.index_patt[i] << "\t";
-                    // }
-                    // cout << endl;
-                    // cout << "index queue:" << endl;
-                    // for (int i = 0; i < patt.index_queue.size(); i++) {
-                    //     cout << patt.index_queue[i] << "\t";
-                    // }
-                    // cout << endl << endl;
-
-                    // print out pattern, if one exists
-                    print_pattern(patt);
-                    patt.base_delta_patt.clear();
-
-                    // search the delta queue to find any remaining patterns
-                    while (patt.base_delta_queue.size() > 0) {
-                        while (patt.base_delta_queue.size() > 0 && !match_base_delta_pattern(patt)) {
-                            patt.base_delta_queue.pop_front();
-                        }
-
-                        // print out pattern after clearing the queue, if one exists
-                        print_pattern(patt);
-                    }   
-
-                    // start new pattern
-                    patt.base_delta_patt.clear();
-                    patt.base_delta_queue.clear();
-
-                    patt.num_occ = 0;
-                    patt.index_patt = patt.index_queue;
-                    patt.index_queue.clear();
-
-                    // patt.index_patt.clear();
-                }
-
-            } // end pattern index exists
-
-            DR_ASSERT(!patt.no_prev_base);
-
-            patt.base_delta_queue.push_back(base - patt.prev_base);
-            // cout << "inserting delta " << (unsigned long long) (base - patt.prev_base) << endl << endl;
-        } // base mismatch
-
-        if (patt.no_prev_base) {
-            patt.no_prev_base = false;
-        }
-
-        patt.index_queue.push_back(idx - base);
-        patt.prev_base = base;
+        index_queue.push_back(idx - base);
         ordinal++;
-    } // end ordinal loop
+    }
+
+    // zero indicies and add to base
+    ptrdiff_t min_index = index_queue[0];
+    for (int i = 1; i < index_queue.size(); i++) {
+        if (index_queue[i] < min_index) {
+            min_index = index_queue[i];
+        }
+    }
+    if (min_index != 0) {
+        for (int i = 0; i < index_queue.size(); i++) {
+            index_queue[i] -= min_index;
+        }
+        base_diff += min_index;
+    }
+
+    PatternStruct &patt = pattern_map[is_write];
+
+    if (patt.index_patt.size() == 0) { // no index patt
+        patt.index_patt = index_queue;
+        DR_ASSERT(patt.no_prev_base);
+        patt.no_prev_base = false;
+    } else if (patt.index_patt == index_queue) {
+        patt.base_delta_queue.push_back(base_diff - patt.prev_base);
+
+        if (patt.base_delta_patt.size() == 0) {
+            if (patt.base_delta_queue.size() >= MAX_PATTERN_QUEUE) {
+                if (!match_base_delta_pattern(patt, false)) {
+                    patt.base_delta_queue.pop_front();
+                }
+            }
+        } else { // base delta pattern exists
+            if (patt.base_delta_queue.size() >= patt.base_delta_patt.size()) {
+                if (patt.base_delta_queue == patt.base_delta_patt) {
+                    patt.num_occ += 1;
+                    patt.base_delta_queue.clear();
+                } else { // base delta pattern mismatch
+                    print_pattern(is_write);
+                    patt.num_occ = 0;
+                    patt.base_delta_patt.clear();
+                }
+            }
+        }
+    } else { // index patt mismatch       
+        print_pattern(is_write);
+        patt.base_delta_patt.clear();
+
+        while (patt.base_delta_queue.size() > 0) {
+            if (!match_base_delta_pattern(patt, false)) {
+                patt.base_delta_queue.pop_front();
+            } else {
+                print_pattern(is_write);
+                patt.num_occ = 0;
+            }
+        }
+        patt.index_patt.clear();
+        patt.base_delta_patt.clear();
+        patt.num_occ = 0;
+        patt.no_prev_base = true;
+    }
+
+    patt.prev_base = base_diff;
 
     instr_free(drcontext, &instr);
 }
