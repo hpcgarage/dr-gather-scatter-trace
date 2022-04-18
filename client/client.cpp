@@ -54,9 +54,11 @@ using namespace std;
 // minimum number of occurrences of a pattern to print
 #define MIN_NUM_OCC 1
 
-// Required: MAX_PATTERN_QUEUE > 2 * MAX_PATTERN_PERIOD
-#define MAX_PATTERN_PERIOD 20
-#define MAX_PATTERN_QUEUE 50
+// Required: MAX_BASE_DELTA_PATTERN_QUEUE > 2 * MAX_BASE_DELTA_PATTERN_PERIOD
+#define MAX_BASE_DELTA_PATTERN_PERIOD 20
+#define MAX_BASE_DELTA_PATTERN_QUEUE 50
+#define MAX_INDEX_PATTERN 16
+
 
 // print information about every gather/scatter operation encountered
 // #define PRINT_ALL_OCC
@@ -104,10 +106,6 @@ const char *const reg_names[] = {
 };
 
 struct PatternStruct {
-    // // stores the first base + index value of the pattern
-    // bool needs_first_instr = true;
-    // BaseIndexTupleStruct init;
-
     // note that using null as an indication of no previous base value
     // is not possible due to some gather/scatter instructions having
     // null as a valid base register value, which indicates that the
@@ -115,24 +113,22 @@ struct PatternStruct {
     bool no_prev_base = true;
     ptrdiff_t prev_base;
 
-    // stores up to MAX_PATTERN_QUEUE deltas
     // if a pattern is not currently being matched, is used to find a pattern
     // if a pattern is currently being matched, is used to store the deltas to attempt to match
-    // bool no_prev_base_delta = true;
-    // app_pc init_base;
-    deque<ptrdiff_t> base_delta_queue;
+    array<ptrdiff_t, MAX_BASE_DELTA_PATTERN_QUEUE> base_delta_queue;
+    int base_delta_queue_num_elem = 0;
 
     // the pattern which is currently being matched
-    // consists of up to MAX_PATTERN_PERIOD deltas
-    deque<ptrdiff_t> base_delta_patt;
+    array<ptrdiff_t, MAX_BASE_DELTA_PATTERN_PERIOD> base_delta_patt;
+    int base_delta_patt_num_elem = 0;
 
     // the number of times the current pattern has been matched so far
     // if no pattern is currently being matched, this value is 0
     unsigned long long num_occ = 0;
 
     bool no_index_patt = true;
-    deque<ptrdiff_t> index_patt;
-    // deque<ptrdiff_t> index_queue;
+    array<ptrdiff_t, MAX_INDEX_PATTERN> index_patt;
+    int index_patt_num_elem = 0;
 };
 
 // map from is_write (false if gather, true if scatter) to current pattern
@@ -142,7 +138,7 @@ static unordered_map <bool, PatternStruct> pattern_map;
 //     to   map from    index_patt
 //              to      map from    base_delta_patt
 //                                  to deque of num_occ
-static unordered_map <bool, map<deque<ptrdiff_t>, map<deque<ptrdiff_t>, deque<unsigned long long>>>> pattern_count;
+static unordered_map <bool, map<vector<ptrdiff_t>, map<vector<ptrdiff_t>, vector<unsigned long long>>>> pattern_count;
 
 static void event_exit(void);
 static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr, bool for_trace, bool translating, void *user_data);
@@ -166,39 +162,50 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
 static void print_pattern(bool is_write) {
 
     PatternStruct &patt = pattern_map[is_write];
-    if (patt.index_patt.size() > 0 && patt.base_delta_patt.size() > 0 && patt.num_occ >= MIN_NUM_OCC) {
+    if (patt.index_patt_num_elem > 0 && patt.base_delta_patt_num_elem > 0 && patt.num_occ >= MIN_NUM_OCC) {
         #ifdef PRINT_PATTERN
         cout << (is_write ? "scatter" : "gather") << endl;
         cout << "index pattern:" << endl;
-        for (int i = 0; i < patt.index_patt.size(); i++) {
-            cout << patt.index_patt[i] << "\t";
+        for (int i = 0; i < patt.index_patt_num_elem; i++) {
+            cout << patt.index_patt.at(i) << "\t";
         }
         cout << endl;
         cout << "base deltas: " << endl;
-        for (int i = 0; i < patt.base_delta_patt.size(); i++) {
-            cout << patt.base_delta_patt[i] << "\t";
+        for (int i = 0; i < patt.base_delta_patt_num_elem; i++) {
+            cout << patt.base_delta_patt.at(i)<< "\t";
         }
         cout << endl;
         cout << "num occurrences: " << patt.num_occ << endl;
         cout << endl << endl;
         #endif
 
-        pattern_count[is_write][patt.index_patt][patt.base_delta_patt].push_back(patt.num_occ);
+        vector<ptrdiff_t> index_patt_vec;
+        for (int i = 0; i < patt.index_patt_num_elem; i++) {
+            index_patt_vec.push_back(patt.index_patt.at(i));
+        }
+        vector<ptrdiff_t> base_delta_patt_vec;
+        for (int i = 0; i < patt.base_delta_patt_num_elem; i++) {
+            base_delta_patt_vec.push_back(patt.base_delta_patt.at(i));
+        }
+        pattern_count[is_write][index_patt_vec][base_delta_patt_vec].push_back(patt.num_occ);
     }
 
 }
 
 static bool match_base_delta_pattern(PatternStruct &patt, bool use_existing_pattern) {
     if (!use_existing_pattern) {
-        patt.base_delta_patt.clear();
+        patt.base_delta_patt_num_elem = 0;
+        for (int i = 0; i < patt.base_delta_patt.max_size(); i++) {
+            patt.base_delta_patt.at(i) = 1337;
+        }
 
         int max_patt_len = 1;
         int max_patt_len_per = -1;
-        for (int patt_per = 1; patt_per <= MAX_PATTERN_PERIOD; patt_per++) {
+        for (int patt_per = 1; patt_per <= MAX_BASE_DELTA_PATTERN_PERIOD; patt_per++) {
             int patt_idx = 0;
             int last_complete_patt_idx = -1;
-            for (int i = 0; i < patt.base_delta_queue.size(); i++) {
-                if (patt.base_delta_queue[patt_idx] != patt.base_delta_queue[i]) {
+            for (int i = 0; i < patt.base_delta_queue_num_elem; i++) {
+                if (patt.base_delta_queue.at(patt_idx) != patt.base_delta_queue.at(i)) {
                     break;
                 }
                 patt_idx += 1;
@@ -214,42 +221,43 @@ static bool match_base_delta_pattern(PatternStruct &patt, bool use_existing_patt
         }
 
         if (max_patt_len_per > 0) {
-            DR_ASSERT(patt.base_delta_patt.size() == 0);
+            DR_ASSERT(patt.base_delta_patt_num_elem == 0);
             for (int i = 0; i < max_patt_len_per; i++) {
-                patt.base_delta_patt.push_back(patt.base_delta_queue[i]);
+                patt.base_delta_patt.at(i) = patt.base_delta_queue.at(i);
             }
+            patt.base_delta_patt_num_elem = max_patt_len_per;
         }
     }
     
 
     // consume as many patterns as possible
-    if (patt.base_delta_patt.size() > 0) {
+    if (patt.base_delta_patt_num_elem > 0) {
         bool matched = false;
-        while (patt.base_delta_queue.size() >= patt.base_delta_patt.size()) {
-            bool match = true;
-            for (int i = 0; i < patt.base_delta_patt.size(); i++) {
-                if (patt.base_delta_queue[i] != patt.base_delta_patt[i]) {
-                    match = false;
-                    break;
-                }
-            }
 
-            if (match) {
-                for (int i = 0; i < patt.base_delta_patt.size(); i++) {
-                    patt.base_delta_queue.pop_front();
-                }
+        int last_full_match_idx = -1;
+        for (int i = 0; i < patt.base_delta_queue_num_elem; i++) {
+            int base_delta_patt_idx = i % patt.base_delta_patt_num_elem; 
+            if (i != 0 && base_delta_patt_idx == 0) {
+                last_full_match_idx = i;
                 patt.num_occ += 1;
-                matched = true;
-            } else {
+            }
+            if (patt.base_delta_queue.at(i) != patt.base_delta_patt.at(base_delta_patt_idx)) {
                 break;
             }
         }
-        DR_ASSERT(use_existing_pattern || matched);
+
+        if (last_full_match_idx != -1) {
+            for (int i = 0; i < patt.base_delta_queue_num_elem - last_full_match_idx; i++) {
+                patt.base_delta_queue.at(i) = patt.base_delta_queue.at(i + last_full_match_idx);
+            }
+            patt.base_delta_queue_num_elem = patt.base_delta_queue_num_elem - last_full_match_idx;
+        }
+        
+        DR_ASSERT(use_existing_pattern || last_full_match_idx != -1);
         DR_ASSERT(use_existing_pattern || patt.num_occ > 0);
         return true;
     } else {
         // if no pattern was found, pop first delta
-        // patt.base_delta_queue.pop_front();
         return false;
     }
 
@@ -322,7 +330,8 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
     app_pc base = (app_pc) reg_get_value(base_regno, &mcontext);
     ptrdiff_t base_diff = base - ((app_pc) 0);
     app_pc idx;
-    deque<ptrdiff_t> index_queue;
+    array<ptrdiff_t, MAX_INDEX_PATTERN> index_queue;
+    int index_queue_num_elem = 0;
     uint ordinal = 0;
     bool is_write;
 
@@ -334,7 +343,8 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
 
     // get addresses accessed by gather/scatter
     while (instr_compute_address_ex(&instr, &mcontext, ordinal, &idx, &is_write)) {
-        index_queue.push_back(idx - base);
+        index_queue.at(index_queue_num_elem) = idx - base;
+        index_queue_num_elem += 1;
         ordinal++;
 
 #ifdef PRINT_ALL_OCC
@@ -346,63 +356,104 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
 #endif
 
     // zero indicies and add to base
-    ptrdiff_t min_index = index_queue[0];
-    for (int i = 1; i < index_queue.size(); i++) {
-        if (index_queue[i] < min_index) {
-            min_index = index_queue[i];
+    ptrdiff_t min_index = index_queue.at(0);
+    for (int i = 1; i < index_queue_num_elem; i++) {
+        if (index_queue.at(i) < min_index) {
+            min_index = index_queue.at(i);
         }
     }
     if (min_index != 0) {
-        for (int i = 0; i < index_queue.size(); i++) {
-            index_queue[i] -= min_index;
+        for (int i = 0; i < index_queue_num_elem; i++) {
+            index_queue.at(i) -= min_index;
         }
         base_diff += min_index;
     }
 
     PatternStruct &patt = pattern_map[is_write];
 
+    bool index_match = (patt.index_patt_num_elem == index_queue_num_elem);
+    if (index_match) {
+        for (int i = 0; i < index_queue_num_elem; i++) {
+            if (index_queue.at(i) != patt.index_patt.at(i)) {
+                index_match = false;
+                break;
+            }
+        }
+    }
+    
+
     if (patt.no_index_patt) { // no index patt
         DR_ASSERT(patt.no_prev_base);
-        patt.index_patt = index_queue;
+        for (int i = 0; i < index_queue_num_elem; i++) {
+            patt.index_patt.at(i) = index_queue.at(i);
+            patt.index_patt_num_elem += 1;
+        }
         patt.no_index_patt = false;
         patt.no_prev_base = false;
-    } else if (patt.index_patt == index_queue) {
-        patt.base_delta_queue.push_back(base_diff - patt.prev_base);
+    } else if (index_match) {
+        patt.base_delta_queue.at(patt.base_delta_queue_num_elem) = base_diff - patt.prev_base;
+        patt.base_delta_queue_num_elem += 1;
 
-        if (patt.base_delta_patt.size() == 0) {
-            if (patt.base_delta_queue.size() >= MAX_PATTERN_QUEUE) {
+        if (patt.base_delta_patt_num_elem == 0) {
+            if (patt.base_delta_queue_num_elem >= MAX_BASE_DELTA_PATTERN_QUEUE) {
                 if (!match_base_delta_pattern(patt, false)) {
-                    patt.base_delta_queue.pop_front();
+                    for (int i = 0; i < patt.base_delta_queue_num_elem - 1; i++) {
+                        patt.base_delta_queue.at(i) = patt.base_delta_queue.at(i+1);
+                    }
+                    patt.base_delta_queue_num_elem -= 1;
                 }
             }
         } else { // base delta pattern exists
-            if (patt.base_delta_queue.size() >= patt.base_delta_patt.size()) {
-                if (patt.base_delta_queue == patt.base_delta_patt) {
+            if (patt.base_delta_queue_num_elem >= patt.base_delta_patt_num_elem) {
+                bool base_delta_match = true;
+                if (base_delta_match) {
+                    for (int i = 0; i < patt.base_delta_patt_num_elem; i++) {
+                        if (patt.base_delta_queue.at(i) != patt.base_delta_patt.at(i)) {
+                            base_delta_match = false;
+                            break;
+                        }
+                    }
+                }
+                if (base_delta_match) {
                     patt.num_occ += 1;
-                    patt.base_delta_queue.clear();
+                    for (int i = 0; i < patt.base_delta_queue_num_elem - patt.base_delta_patt_num_elem; i++) {
+                        patt.base_delta_queue.at(i) = patt.base_delta_queue.at(i + patt.base_delta_patt_num_elem);
+                    }
+                    patt.base_delta_queue_num_elem -= patt.base_delta_patt_num_elem;
                 } else { // base delta pattern mismatch
+                    patt.num_occ += 1;
                     print_pattern(is_write);
                     patt.num_occ = 0;
-                    patt.base_delta_patt.clear();
+                    patt.base_delta_patt_num_elem = 0;
+                    for (int i = 0; i < patt.base_delta_patt.max_size(); i++) {
+                        patt.base_delta_patt.at(i) = 1337;
+                    }
                 }
             }
         }
     } else { // index patt mismatch       
         print_pattern(is_write);
 
-        while (patt.base_delta_queue.size() > 0) {
-            // cout << "2\n\n";
+        while (patt.base_delta_queue_num_elem > 0) {
             if (!match_base_delta_pattern(patt, false)) {
-                patt.base_delta_queue.pop_front();
+                for (int i = 0; i < patt.base_delta_queue_num_elem - 1; i++) {
+                    patt.base_delta_queue.at(i) = patt.base_delta_queue.at(i+1);
+                }
+                patt.base_delta_queue_num_elem -= 1;
             } else {
                 print_pattern(is_write);
                 patt.num_occ = 0;
             }
         }
 
-        patt.base_delta_patt.clear();
-        patt.index_patt.clear();
-        patt.base_delta_patt.clear();
+        patt.base_delta_patt_num_elem = 0;
+        for (int i = 0; i < patt.base_delta_patt.max_size(); i++) {
+            patt.base_delta_patt.at(i) = 1337;
+        }
+        patt.index_patt_num_elem = 0;
+        for (int i = 0; i < patt.index_patt.max_size(); i++) {
+            patt.index_patt.at(i) = 1337;
+        }
         patt.num_occ = 0;
         patt.no_prev_base = true;
         patt.no_index_patt = true;
