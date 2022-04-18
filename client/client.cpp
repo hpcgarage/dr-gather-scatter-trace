@@ -51,10 +51,15 @@
 
 using namespace std;
 
-// #define PRINT_PATTERN
-
 // minimum number of occurrences of a pattern to print
 #define MIN_NUM_OCC 1
+
+// Required: MAX_PATTERN_QUEUE > 2 * MAX_PATTERN_PERIOD
+#define MAX_PATTERN_PERIOD 20
+#define MAX_PATTERN_QUEUE 50
+
+// print information about every gather/scatter operation encountered
+// #define PRINT_ALL_OCC
 
 // copied from dynamorio core/ir/x86/encode.c
 const char *const reg_names[] = {
@@ -98,10 +103,6 @@ const char *const reg_names[] = {
     "bnd1",   "bnd2",  "bnd3",
 };
 
-// Required: MAX_PATTERN_QUEUE > 2 * MAX_PATTERN_PERIOD
-#define MAX_PATTERN_PERIOD 20
-#define MAX_PATTERN_QUEUE 50
-
 struct PatternStruct {
     // // stores the first base + index value of the pattern
     // bool needs_first_instr = true;
@@ -129,6 +130,7 @@ struct PatternStruct {
     // if no pattern is currently being matched, this value is 0
     unsigned long long num_occ = 0;
 
+    bool no_index_patt = true;
     deque<ptrdiff_t> index_patt;
     // deque<ptrdiff_t> index_queue;
 };
@@ -188,6 +190,8 @@ static void print_pattern(bool is_write) {
 
 static bool match_base_delta_pattern(PatternStruct &patt, bool use_existing_pattern) {
     if (!use_existing_pattern) {
+        patt.base_delta_patt.clear();
+
         int max_patt_len = 1;
         int max_patt_len_per = -1;
         for (int patt_per = 1; patt_per <= MAX_PATTERN_PERIOD; patt_per++) {
@@ -274,9 +278,18 @@ static void event_exit(void) {
                 }
                 cout << endl;
                 cout << "occurrences" << endl;
+#ifdef PRINT_ALL_OCC_FINAL
                 for (int i = 0; i < base_delta_patt_elem.second.size(); i++) {
                     cout << base_delta_patt_elem.second[i] << "\t";
                 }
+#else
+                for (int i = 0; i < min(static_cast<std::deque<long long unsigned int>::size_type>(100), base_delta_patt_elem.second.size()); i++) {
+                    cout << base_delta_patt_elem.second[i] << "\t";
+                }
+                if (base_delta_patt_elem.second.size() > 100) {
+                    cout << endl << "[output truncated]" << endl;
+                }
+#endif
                 cout << endl;
                 cout << endl << endl;
             }
@@ -313,11 +326,24 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
     uint ordinal = 0;
     bool is_write;
 
+#ifdef PRINT_ALL_OCC
+    cout << "opcode: " << decode_opcode_name(instr_get_opcode(&instr)) << endl;
+    cout << "base: " << (unsigned long long) base << endl;
+    cout << "indicies: ";
+#endif
+
     // get addresses accessed by gather/scatter
     while (instr_compute_address_ex(&instr, &mcontext, ordinal, &idx, &is_write)) {
         index_queue.push_back(idx - base);
         ordinal++;
+
+#ifdef PRINT_ALL_OCC
+        cout << (unsigned long long) (idx - base) << "\t";
+#endif
     }
+#ifdef PRINT_ALL_OCC
+    cout << endl << endl;
+#endif
 
     // zero indicies and add to base
     ptrdiff_t min_index = index_queue[0];
@@ -335,9 +361,10 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
 
     PatternStruct &patt = pattern_map[is_write];
 
-    if (patt.index_patt.size() == 0) { // no index patt
-        patt.index_patt = index_queue;
+    if (patt.no_index_patt) { // no index patt
         DR_ASSERT(patt.no_prev_base);
+        patt.index_patt = index_queue;
+        patt.no_index_patt = false;
         patt.no_prev_base = false;
     } else if (patt.index_patt == index_queue) {
         patt.base_delta_queue.push_back(base_diff - patt.prev_base);
@@ -362,9 +389,9 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
         }
     } else { // index patt mismatch       
         print_pattern(is_write);
-        patt.base_delta_patt.clear();
 
         while (patt.base_delta_queue.size() > 0) {
+            // cout << "2\n\n";
             if (!match_base_delta_pattern(patt, false)) {
                 patt.base_delta_queue.pop_front();
             } else {
@@ -372,10 +399,13 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
                 patt.num_occ = 0;
             }
         }
+
+        patt.base_delta_patt.clear();
         patt.index_patt.clear();
         patt.base_delta_patt.clear();
         patt.num_occ = 0;
         patt.no_prev_base = true;
+        patt.no_index_patt = true;
     }
 
     patt.prev_base = base_diff;
