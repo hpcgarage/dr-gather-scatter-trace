@@ -59,9 +59,11 @@ using namespace std;
 #define MAX_BASE_DELTA_PATTERN_QUEUE 50
 #define MAX_INDEX_PATTERN 16
 
-
 // print information about every gather/scatter operation encountered
 // #define PRINT_ALL_OCC
+
+// print information about patterns as they are discovered
+#define PRINT_PATTERN
 
 // copied from dynamorio core/ir/x86/encode.c
 const char *const reg_names[] = {
@@ -131,17 +133,23 @@ struct PatternStruct {
     int index_patt_num_elem = 0;
 };
 
-// map from is_write (false if gather, true if scatter) to current pattern
-static unordered_map <bool, PatternStruct> pattern_map;
+struct per_thread_t {
+    // map from is_write (false(0) if gather, true(1) if scatter) to current pattern
+    PatternStruct pattern_map[2];
+};
+
+static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr, bool for_trace, bool translating, void *user_data);
+static void event_thread_init(void *drcontext);
+static void event_thread_exit(void *drcontext);
+static void event_exit(void);
 
 // map from is_write
 //     to   map from    index_patt
 //              to      map from    base_delta_patt
 //                                  to deque of num_occ
+static void *count_mutex;
 static unordered_map <bool, map<vector<ptrdiff_t>, map<vector<ptrdiff_t>, vector<unsigned long long>>>> pattern_count;
-
-static void event_exit(void);
-static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr, bool for_trace, bool translating, void *user_data);
+static int tls_idx = 0;
 
 DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     if (!drmgr_init())
@@ -150,46 +158,18 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
 
     /* Register events: */
     dr_register_exit_event(event_exit);
-    if (!drmgr_register_bb_instrumentation_event(NULL, event_app_instruction, NULL))
+    if (!drmgr_register_thread_init_event(event_thread_init) ||
+        !drmgr_register_thread_exit_event(event_thread_exit) ||
+        !drmgr_register_bb_instrumentation_event(NULL, event_app_instruction, NULL)) {
         DR_ASSERT(false);
+    }
+    tls_idx = drmgr_register_tls_field();
+    count_mutex = dr_mutex_create();
 
     dr_log(NULL, DR_LOG_ALL, 1, "Client 'Gather Scatter Pattern Identification' initializing\n");
     if (dr_is_notify_on()) {
         dr_fprintf(STDOUT, "Client Gather Scatter Pattern Identification is running\n");
     }
-}
-
-static void print_pattern(bool is_write) {
-
-    PatternStruct &patt = pattern_map[is_write];
-    if (patt.index_patt_num_elem > 0 && patt.base_delta_patt_num_elem > 0 && patt.num_occ >= MIN_NUM_OCC) {
-        #ifdef PRINT_PATTERN
-        cout << (is_write ? "scatter" : "gather") << endl;
-        cout << "index pattern:" << endl;
-        for (int i = 0; i < patt.index_patt_num_elem; i++) {
-            cout << patt.index_patt.at(i) << "\t";
-        }
-        cout << endl;
-        cout << "base deltas: " << endl;
-        for (int i = 0; i < patt.base_delta_patt_num_elem; i++) {
-            cout << patt.base_delta_patt.at(i)<< "\t";
-        }
-        cout << endl;
-        cout << "num occurrences: " << patt.num_occ << endl;
-        cout << endl << endl;
-        #endif
-
-        vector<ptrdiff_t> index_patt_vec;
-        for (int i = 0; i < patt.index_patt_num_elem; i++) {
-            index_patt_vec.push_back(patt.index_patt.at(i));
-        }
-        vector<ptrdiff_t> base_delta_patt_vec;
-        for (int i = 0; i < patt.base_delta_patt_num_elem; i++) {
-            base_delta_patt_vec.push_back(patt.base_delta_patt.at(i));
-        }
-        pattern_count[is_write][index_patt_vec][base_delta_patt_vec].push_back(patt.num_occ);
-    }
-
 }
 
 static bool match_base_delta_pattern(PatternStruct &patt, bool use_existing_pattern) {
@@ -263,51 +243,76 @@ static bool match_base_delta_pattern(PatternStruct &patt, bool use_existing_patt
 
 }
 
+static void print_pattern(PatternStruct &patt, bool is_write) {
+    if (patt.index_patt_num_elem > 0 && patt.base_delta_patt_num_elem > 0 && patt.num_occ >= MIN_NUM_OCC) {
+        #ifdef PRINT_PATTERN
+        cout << (is_write ? "scatter" : "gather") << endl;
+        cout << "index pattern:" << endl;
+        for (int i = 0; i < patt.index_patt_num_elem; i++) {
+            cout << patt.index_patt.at(i) << "\t";
+        }
+        cout << endl;
+        cout << "base deltas: " << endl;
+        for (int i = 0; i < patt.base_delta_patt_num_elem; i++) {
+            cout << patt.base_delta_patt.at(i)<< "\t";
+        }
+        cout << endl;
+        cout << "num occurrences: " << patt.num_occ << endl;
+        cout << endl << endl;
+        #endif
+    }
+}
 
-static void event_exit(void) {
-    // TODO while loop match
-    match_base_delta_pattern(pattern_map[true], true);
-    print_pattern(true);
-    match_base_delta_pattern(pattern_map[false], true);
-    print_pattern(false);
+// Records a given pattern within the global count map
+// Also resets the index and base pattern.
+// For correctness, this method should only be called at the end of the pattern
+// Ie, there has been a base or index mismatch.
+static void record_pattern_occurrence(PatternStruct &patt, bool is_write) {
+    if (patt.index_patt_num_elem > 0 && patt.base_delta_patt_num_elem > 0 && patt.num_occ >= MIN_NUM_OCC) {
+        vector<ptrdiff_t> index_patt_vec;
+        for (int i = 0; i < patt.index_patt_num_elem; i++) {
+            index_patt_vec.push_back(patt.index_patt.at(i));
+        }
+        vector<ptrdiff_t> base_delta_patt_vec;
+        for (int i = 0; i < patt.base_delta_patt_num_elem; i++) {
+            base_delta_patt_vec.push_back(patt.base_delta_patt.at(i));
+        }
+        dr_mutex_lock(count_mutex);
+        pattern_count[is_write][index_patt_vec][base_delta_patt_vec].push_back(patt.num_occ);
+        dr_mutex_unlock(count_mutex);
+    }
 
-    for (const auto& is_write_elem : pattern_count) {
-        for (const auto& index_patt_elem : is_write_elem.second) {
-            for (const auto& base_delta_patt_elem : index_patt_elem.second) {
-                cout << (is_write_elem.first ? "scatter" : "gather") << endl;
-                cout << "index patt" << endl;
-                for (int i = 0; i < index_patt_elem.first.size(); i++) {
-                    cout << index_patt_elem.first[i] << "\t";
-                }
-                cout << endl;
-                cout << "base deltas" << endl;
-                for (int i = 0; i < base_delta_patt_elem.first.size(); i++) {
-                    cout << base_delta_patt_elem.first[i] << "\t";
-                }
-                cout << endl;
-                cout << "occurrences" << endl;
-#ifdef PRINT_ALL_OCC_FINAL
-                for (int i = 0; i < base_delta_patt_elem.second.size(); i++) {
-                    cout << base_delta_patt_elem.second[i] << "\t";
-                }
-#else
-                for (int i = 0; i < min(static_cast<std::deque<long long unsigned int>::size_type>(100), base_delta_patt_elem.second.size()); i++) {
-                    cout << base_delta_patt_elem.second[i] << "\t";
-                }
-                if (base_delta_patt_elem.second.size() > 100) {
-                    cout << endl << "[output truncated]" << endl;
-                }
-#endif
-                cout << endl;
-                cout << endl << endl;
+    patt.base_delta_patt_num_elem = 0;
+    patt.base_delta_patt.fill(1337);
+    patt.index_patt_num_elem = 0;
+    patt.index_patt.fill(1337);
+    patt.num_occ = 0;
+    patt.no_prev_base = true;
+    patt.no_index_patt = true;
+}
+
+static void record_and_print_pattern_occurrence(PatternStruct &patt, bool is_write) {
+    record_pattern_occurrence(patt, is_write);
+    print_pattern(patt, is_write);
+}
+
+static void record_and_print_remaining_pattern_occurrences(PatternStruct &patt, bool is_write) {
+    // finish matching any remaining instructions of the current pattern
+    match_base_delta_pattern(patt, true);
+    record_and_print_pattern_occurrence(patt, is_write);
+
+    while (patt.base_delta_queue_num_elem > 0) {
+        if (!match_base_delta_pattern(patt, false)) {
+            for (int i = 0; i < patt.base_delta_queue_num_elem - 1; i++) {
+                patt.base_delta_queue.at(i) = patt.base_delta_queue.at(i+1);
             }
+            patt.base_delta_queue_num_elem -= 1;
+        } else {
+            record_and_print_pattern_occurrence(patt, is_write);
+            // print_pattern(is_write);
+            // patt.num_occ = 0;
         }
     }
-    
-    if (!drmgr_unregister_bb_insertion_event(event_app_instruction))
-        DR_ASSERT(false);
-    drx_exit();
-    drmgr_exit();
 }
 
 static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
@@ -369,7 +374,8 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
         base_diff += min_index;
     }
 
-    PatternStruct &patt = pattern_map[is_write];
+    // PatternStruct &patt = pattern_map[is_write];
+    PatternStruct patt = ((per_thread_t *)drmgr_get_tls_field(drcontext, tls_idx))->pattern_map[is_write];
 
     bool index_match = (patt.index_patt_num_elem == index_queue_num_elem);
     if (index_match) {
@@ -422,17 +428,19 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
                     patt.base_delta_queue_num_elem -= patt.base_delta_patt_num_elem;
                 } else { // base delta pattern mismatch
                     patt.num_occ += 1;
-                    print_pattern(is_write);
-                    patt.num_occ = 0;
-                    patt.base_delta_patt_num_elem = 0;
-                    for (int i = 0; i < patt.base_delta_patt.max_size(); i++) {
-                        patt.base_delta_patt.at(i) = 1337;
-                    }
+                    // print_pattern(patt, is_write);
+                    // patt.num_occ = 0;
+                    // patt.base_delta_patt_num_elem = 0;
+                    // for (int i = 0; i < patt.base_delta_patt.max_size(); i++) {
+                    //     patt.base_delta_patt.at(i) = 1337;
+                    // }
+                    record_and_print_pattern_occurrence(patt, is_write);
                 }
             }
         }
-    } else { // index patt mismatch       
-        print_pattern(is_write);
+    } else { // index patt mismatch 
+        // print_pattern(is_write);
+        record_and_print_pattern_occurrence(patt, is_write);
 
         while (patt.base_delta_queue_num_elem > 0) {
             if (!match_base_delta_pattern(patt, false)) {
@@ -441,27 +449,77 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
                 }
                 patt.base_delta_queue_num_elem -= 1;
             } else {
-                print_pattern(is_write);
-                patt.num_occ = 0;
+                record_and_print_pattern_occurrence(patt, is_write);
             }
         }
-
-        patt.base_delta_patt_num_elem = 0;
-        for (int i = 0; i < patt.base_delta_patt.max_size(); i++) {
-            patt.base_delta_patt.at(i) = 1337;
-        }
-        patt.index_patt_num_elem = 0;
-        for (int i = 0; i < patt.index_patt.max_size(); i++) {
-            patt.index_patt.at(i) = 1337;
-        }
-        patt.num_occ = 0;
-        patt.no_prev_base = true;
-        patt.no_index_patt = true;
     }
 
     patt.prev_base = base_diff;
 
+    ((per_thread_t *)drmgr_get_tls_field(drcontext, tls_idx))->pattern_map[is_write] = patt;
+
     instr_free(drcontext, &instr);
+}
+
+static void event_thread_init(void *drcontext) {
+    per_thread_t *data = (per_thread_t *)dr_thread_alloc(drcontext, sizeof(per_thread_t));
+    drmgr_set_tls_field(drcontext, tls_idx, data);
+    cout << "init thread " << dr_get_thread_id(drcontext) << endl;
+}
+
+static void event_thread_exit(void *drcontext) {
+    per_thread_t *data = (per_thread_t *)drmgr_get_tls_field(drcontext, tls_idx);
+    cout << "thread exit " << dr_get_thread_id(drcontext) << endl;
+    
+    record_and_print_remaining_pattern_occurrences(data->pattern_map[false], false);
+    record_and_print_remaining_pattern_occurrences(data->pattern_map[true], true);
+
+    /* clean up memory */
+    dr_thread_free(drcontext, data, sizeof(per_thread_t));
+}
+
+static void event_exit(void) {
+    for (const auto& is_write_elem : pattern_count) {
+        for (const auto& index_patt_elem : is_write_elem.second) {
+            for (const auto& base_delta_patt_elem : index_patt_elem.second) {
+                cout << (is_write_elem.first ? "scatter" : "gather") << endl;
+                cout << "index patt" << endl;
+                for (int i = 0; i < index_patt_elem.first.size(); i++) {
+                    cout << index_patt_elem.first[i] << "\t";
+                }
+                cout << endl;
+                cout << "base deltas" << endl;
+                for (int i = 0; i < base_delta_patt_elem.first.size(); i++) {
+                    cout << base_delta_patt_elem.first[i] << "\t";
+                }
+                cout << endl;
+                cout << "occurrences" << endl;
+#ifdef PRINT_ALL_OCC_FINAL
+                for (int i = 0; i < base_delta_patt_elem.second.size(); i++) {
+                    cout << base_delta_patt_elem.second[i] << "\t";
+                }
+#else
+                for (int i = 0; i < min(static_cast<std::deque<long long unsigned int>::size_type>(100), base_delta_patt_elem.second.size()); i++) {
+                    cout << base_delta_patt_elem.second[i] << "\t";
+                }
+                if (base_delta_patt_elem.second.size() > 100) {
+                    cout << endl << "[output truncated]" << endl;
+                }
+#endif
+                cout << endl;
+                cout << endl << endl;
+            }
+        }
+    }
+    
+    if (!drmgr_unregister_bb_insertion_event(event_app_instruction) ||
+        !drmgr_unregister_thread_init_event(event_thread_init) ||
+        !drmgr_unregister_thread_exit_event(event_thread_exit)) {
+        DR_ASSERT(false);
+    }
+    dr_mutex_destroy(count_mutex);
+    drx_exit();
+    drmgr_exit();
 }
 
 /* This is called separately for each instruction in the block. */
