@@ -282,11 +282,8 @@ static void record_pattern_occurrence(PatternStruct &patt, bool is_write) {
 
     patt.base_delta_patt_num_elem = 0;
     patt.base_delta_patt.fill(1337);
-    patt.index_patt_num_elem = 0;
-    patt.index_patt.fill(1337);
     patt.num_occ = 0;
     patt.no_prev_base = true;
-    patt.no_index_patt = true;
 }
 
 // soft reset
@@ -297,7 +294,7 @@ static void record_and_print_pattern_occurrence(PatternStruct &patt, bool is_wri
 }
 
 // hard reset
-// will clear pattern and queue
+// will clear base pattern, index pattern and queue
 static void record_and_print_remaining_pattern_occurrences(PatternStruct &patt, bool is_write) {
     // finish matching any remaining instructions of the current pattern
     match_base_delta_pattern(patt, true);
@@ -313,6 +310,10 @@ static void record_and_print_remaining_pattern_occurrences(PatternStruct &patt, 
             record_and_print_pattern_occurrence(patt, is_write);
         }
     }
+
+    patt.index_patt_num_elem = 0;
+    patt.index_patt.fill(1337);
+    patt.no_index_patt = true;
 }
 
 static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
@@ -320,6 +321,9 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
     dr_mcontext_t mcontext;
     mcontext.size = sizeof(mcontext);
     mcontext.flags = DR_MC_ALL;
+    DR_ASSERT(DR_MC_ALL & DR_MC_CONTROL);
+    DR_ASSERT(DR_MC_ALL & DR_MC_INTEGER);
+    DR_ASSERT(DR_MC_ALL & DR_MC_MULTIMEDIA);
     dr_get_mcontext(drcontext, &mcontext);
 
     instr_t instr;
@@ -336,8 +340,7 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
     ptrdiff_t base_diff = base - ((app_pc) 0);
     app_pc idx;
     array<ptrdiff_t, MAX_INDEX_PATTERN> index_queue;
-    int index_queue_num_elem = 0;
-    uint ordinal = 0;
+    uint index_queue_num_elem = 0;
     bool is_write;
 
 #ifdef PRINT_ALL_OCC
@@ -347,10 +350,9 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
 #endif
 
     // get addresses accessed by gather/scatter
-    while (instr_compute_address_ex(&instr, &mcontext, ordinal, &idx, &is_write)) {
+    while (instr_compute_address_ex(&instr, &mcontext, index_queue_num_elem, &idx, &is_write)) {
         index_queue.at(index_queue_num_elem) = idx - base;
         index_queue_num_elem += 1;
-        ordinal++;
 
 #ifdef PRINT_ALL_OCC
         cout << (unsigned long long) (idx - base) << "\t";
@@ -359,6 +361,11 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
 #ifdef PRINT_ALL_OCC
     cout << endl << endl;
 #endif
+
+    if (index_queue_num_elem == 0) {
+        instr_free(drcontext, &instr);
+        return;
+    }
 
     // zero indicies and add to base
     // assumes indicies are non negative
@@ -426,15 +433,6 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
                     patt.num_occ += 1;
                 } else { // base delta pattern mismatch
                     record_and_print_pattern_occurrence(patt, is_write);
-
-                    // start new pattern using current instruction
-                    DR_ASSERT(patt.no_prev_base && patt.no_index_patt);
-                    for (int i = 0; i < index_queue_num_elem; i++) {
-                        patt.index_patt.at(i) = index_queue.at(i);
-                        patt.index_patt_num_elem += 1;
-                    }
-                    patt.no_index_patt = false;
-                    patt.no_prev_base = false;
                 }
             }
         }
@@ -484,12 +482,18 @@ static void event_exit(void) {
                 cout << (is_write_elem.first ? "scatter" : "gather") << endl;
                 cout << "index patt" << endl;
                 for (int i = 0; i < index_patt_elem.first.size(); i++) {
-                    cout << index_patt_elem.first[i] << "\t";
+                    cout << ((unsigned long long) index_patt_elem.first[i]) << "\t";
+                }
+                if (index_patt_elem.first.size() == 0) {
+                    cout << "EMPTY";
                 }
                 cout << endl;
                 cout << "base deltas" << endl;
                 for (int i = 0; i < base_delta_patt_elem.first.size(); i++) {
-                    cout << base_delta_patt_elem.first[i] << "\t";
+                    cout << ((unsigned long long) base_delta_patt_elem.first[i]) << "\t";
+                }
+                if (base_delta_patt_elem.first.size() == 0) {
+                    cout << "EMPTY";
                 }
                 cout << endl;
                 cout << "occurrences" << endl;
