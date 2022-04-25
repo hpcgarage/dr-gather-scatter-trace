@@ -51,6 +51,17 @@
 
 using namespace std;
 
+// print information about every gather/scatter operation encountered
+// #define PRINT_ALL_OCC
+
+// print information about patterns as they are discovered
+// #define PRINT_PATTERN
+
+// print all occurrences of all patterns
+// otherwise, occurrences of each pattern are truncated to the first 100
+// #define PRINT_ALL_OCC_FINAL
+
+
 // minimum number of occurrences of a pattern to print
 #define MIN_NUM_OCC 1
 
@@ -59,53 +70,6 @@ using namespace std;
 #define MAX_BASE_DELTA_PATTERN_QUEUE 50
 #define MAX_INDEX_PATTERN 16
 
-// print information about every gather/scatter operation encountered
-// #define PRINT_ALL_OCC
-
-// print information about patterns as they are discovered
-#define PRINT_PATTERN
-
-// copied from dynamorio core/ir/x86/encode.c
-const char *const reg_names[] = {
-    "<NULL>", "rax",   "rcx",   "rdx",   "rbx",   "rsp",   "rbp",   "rsi",       "rdi",
-    "r8",     "r9",    "r10",   "r11",   "r12",   "r13",   "r14",   "r15",       "eax",
-    "ecx",    "edx",   "ebx",   "esp",   "ebp",   "esi",   "edi",   "r8d",       "r9d",
-    "r10d",   "r11d",  "r12d",  "r13d",  "r14d",  "r15d",  "ax",    "cx",        "dx",
-    "bx",     "sp",    "bp",    "si",    "di",    "r8w",   "r9w",   "r10w",      "r11w",
-    "r12w",   "r13w",  "r14w",  "r15w",  "al",    "cl",    "dl",    "bl",        "ah",
-    "ch",     "dh",    "bh",    "r8l",   "r9l",   "r10l",  "r11l",  "r12l",      "r13l",
-    "r14l",   "r15l",  "spl",   "bpl",   "sil",   "dil",   "mm0",   "mm1",       "mm2",
-    "mm3",    "mm4",   "mm5",   "mm6",   "mm7",   "xmm0",  "xmm1",  "xmm2",      "xmm3",
-    "xmm4",   "xmm5",  "xmm6",  "xmm7",  "xmm8",  "xmm9",  "xmm10", "xmm11",     "xmm12",
-    "xmm13",  "xmm14", "xmm15", "xmm16", "xmm17", "xmm18", "xmm19", "xmm20",     "xmm21",
-    "xmm22",  "xmm23", "xmm24", "xmm25", "xmm26", "xmm27", "xmm28", "xmm29",     "xmm30",
-    "xmm31",  "",      "",      "",      "",      "",      "",      "",          "",
-    "",       "",      "",      "",      "",      "",      "",      "",          "",
-    "",       "",      "",      "",      "",      "",      "",      "",          "",
-    "",       "",      "",      "",      "",      "",      "st0",   "st1",       "st2",
-    "st3",    "st4",   "st5",   "st6",   "st7",   "es",    "cs",    "ss",        "ds",
-    "fs",     "gs",    "dr0",   "dr1",   "dr2",   "dr3",   "dr4",   "dr5",       "dr6",
-    "dr7",    "dr8",   "dr9",   "dr10",  "dr11",  "dr12",  "dr13",  "dr14",      "dr15",
-    "cr0",    "cr1",   "cr2",   "cr3",   "cr4",   "cr5",   "cr6",   "cr7",       "cr8",
-    "cr9",    "cr10",  "cr11",  "cr12",  "cr13",  "cr14",  "cr15",  "<invalid>", "ymm0",
-    "ymm1",   "ymm2",  "ymm3",  "ymm4",  "ymm5",  "ymm6",  "ymm7",  "ymm8",      "ymm9",
-    "ymm10",  "ymm11", "ymm12", "ymm13", "ymm14", "ymm15", "ymm16", "ymm17",     "ymm18",
-    "ymm19",  "ymm20", "ymm21", "ymm22", "ymm23", "ymm24", "ymm25", "ymm26",     "ymm27",
-    "ymm28",  "ymm29", "ymm30", "ymm31", "",      "",      "",      "",          "",
-    "",       "",      "",      "",      "",      "",      "",      "",          "",
-    "",       "",      "",      "",      "",      "",      "",      "",          "",
-    "",       "",      "",      "",      "",      "",      "",      "",          "",
-    "zmm0",   "zmm1",  "zmm2",  "zmm3",  "zmm4",  "zmm5",  "zmm6",  "zmm7",      "zmm8",
-    "zmm9",   "zmm10", "zmm11", "zmm12", "zmm13", "zmm14", "zmm15", "zmm16",     "zmm17",
-    "zmm18",  "zmm19", "zmm20", "zmm21", "zmm22", "zmm23", "zmm24", "zmm25",     "zmm26",
-    "zmm27",  "zmm28", "zmm29", "zmm30", "zmm31", "",      "",      "",          "",
-    "",       "",      "",      "",      "",      "",      "",      "",          "",
-    "",       "",      "",      "",      "",      "",      "",      "",          "",
-    "",       "",      "",      "",      "",      "",      "",      "",          "",
-    "",       "k0",    "k1",    "k2",    "k3",    "k4",    "k5",    "k6",        "k7",
-    "",       "",      "",      "",      "",      "",      "",      "",          "bnd0",
-    "bnd1",   "bnd2",  "bnd3",
-};
 
 struct PatternStruct {
     // note that using null as an indication of no previous base value
@@ -151,6 +115,10 @@ static void *count_mutex;
 static unordered_map <bool, map<vector<ptrdiff_t>, map<vector<ptrdiff_t>, vector<unsigned long long>>>> pattern_count;
 static int tls_idx = 0;
 
+#ifdef PRINT_PATTERN
+static void *print_pattern_mutex;
+#endif
+
 DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     if (!drmgr_init())
         DR_ASSERT(false);
@@ -165,6 +133,10 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     }
     tls_idx = drmgr_register_tls_field();
     count_mutex = dr_mutex_create();
+
+#ifdef PRINT_PATTERN
+    print_pattern_mutex = dr_mutex_create();
+#endif
 
     dr_log(NULL, DR_LOG_ALL, 1, "Client 'Gather Scatter Pattern Identification' initializing\n");
     if (dr_is_notify_on()) {
@@ -242,8 +214,9 @@ static bool match_base_delta_pattern(PatternStruct &patt, bool use_existing_patt
 }
 
 static void print_pattern(PatternStruct &patt, bool is_write) {
+#ifdef PRINT_PATTERN
     if (patt.base_delta_patt_num_elem > 0 && patt.num_occ >= MIN_NUM_OCC) {
-        #ifdef PRINT_PATTERN
+        dr_mutex_lock(print_pattern_mutex);
         cout << (is_write ? "scatter" : "gather") << endl;
         cout << "index pattern:" << endl;
         for (int i = 0; i < patt.index_patt_num_elem; i++) {
@@ -257,8 +230,10 @@ static void print_pattern(PatternStruct &patt, bool is_write) {
         cout << endl;
         cout << "num occurrences: " << patt.num_occ << endl;
         cout << endl << endl;
-        #endif
+
+        dr_mutex_unlock(print_pattern_mutex); 
     }
+#endif
 }
 
 // Records a given pattern within the global count map
@@ -279,11 +254,6 @@ static void record_pattern_occurrence(PatternStruct &patt, bool is_write) {
         pattern_count[is_write][index_patt_vec][base_delta_patt_vec].push_back(patt.num_occ);
         dr_mutex_unlock(count_mutex);
     }
-
-    patt.base_delta_patt_num_elem = 0;
-    patt.base_delta_patt.fill(1337);
-    patt.num_occ = 0;
-    patt.no_prev_base = true;
 }
 
 // soft reset
@@ -291,6 +261,11 @@ static void record_pattern_occurrence(PatternStruct &patt, bool is_write) {
 static void record_and_print_pattern_occurrence(PatternStruct &patt, bool is_write) {
     record_pattern_occurrence(patt, is_write);
     print_pattern(patt, is_write);
+
+    patt.base_delta_patt_num_elem = 0;
+    patt.base_delta_patt.fill(1337);
+    patt.num_occ = 0;
+    patt.no_prev_base = true;
 }
 
 // hard reset
