@@ -102,8 +102,14 @@ struct per_thread_t {
     PatternStruct pattern_map[2];
 };
 
-static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr, bool for_trace, bool translating, void *user_data);
 static void event_thread_init(void *drcontext);
+static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr, bool for_trace, bool translating, void *user_data);
+static void read_instr_reg_state(app_pc instr_addr, int base_regno);
+static bool match_base_delta_pattern(PatternStruct &patt, bool use_existing_pattern);
+static void record_and_print_remaining_pattern_occurrences(PatternStruct &patt, bool is_write);
+static void record_and_print_pattern_occurrence(PatternStruct &patt, bool is_write);
+static void record_pattern_occurrence(PatternStruct &patt, bool is_write);
+static void print_pattern(PatternStruct &patt, bool is_write);
 static void event_thread_exit(void *drcontext);
 static void event_exit(void);
 
@@ -144,151 +150,66 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     }
 }
 
-static bool match_base_delta_pattern(PatternStruct &patt, bool use_existing_pattern) {
-    if (!use_existing_pattern) {
-        patt.base_delta_patt_num_elem = 0;
-        for (int i = 0; i < patt.base_delta_patt.max_size(); i++) {
-            patt.base_delta_patt.at(i) = 1337;
-        }
+static void event_thread_init(void *drcontext) {
+    per_thread_t *data = (per_thread_t *)dr_thread_alloc(drcontext, sizeof(per_thread_t));
+    drmgr_set_tls_field(drcontext, tls_idx, data);
+    data->pattern_map[false].base_delta_patt_num_elem = 0;
+    data->pattern_map[false].index_patt_num_elem = 0;
+    data->pattern_map[false].num_occ = 0;
+    data->pattern_map[false].no_prev_base = true;
+    data->pattern_map[false].no_index_patt = true;
+    data->pattern_map[true].base_delta_patt_num_elem = 0;
+    data->pattern_map[true].index_patt_num_elem = 0;
+    data->pattern_map[true].num_occ = 0;
+    data->pattern_map[true].no_prev_base = true;
+    data->pattern_map[true].no_index_patt = true;
 
-        int max_patt_len = 1;
-        int max_patt_len_per = -1;
-        for (int patt_per = 1; patt_per <= MAX_BASE_DELTA_PATTERN_PERIOD; patt_per++) {
-            int patt_idx = 0;
-            int last_complete_patt_idx = -1;
-            for (int i = 0; i < patt.base_delta_queue_num_elem; i++) {
-                if (patt.base_delta_queue.at(patt_idx) != patt.base_delta_queue.at(i)) {
-                    break;
+    cout << "thread init " << dr_get_thread_id(drcontext) << endl;
+}
+
+/* This is called separately for each instruction in the block. */
+static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrlist_t *bb,
+                                            instr_t *instr, bool for_trace, bool translating,
+                                            void *user_data) {
+    drmgr_disable_auto_predication(drcontext, bb);
+    if (drmgr_is_first_instr(drcontext, instr)) {
+        instr_t *ins;
+
+        /* Normally looking ahead should be performed in the analysis event, but
+         * here that would require storing the counts into an array passed in
+         * user_data.  We avoid that overhead by cheating drmgr's model a little
+         * bit and looking forward.  An alternative approach would be to insert
+         * each counter before its respective instruction and have an
+         * instru2instru pass that pulls the increments together to reduce
+         * overhead.
+         */
+        for (ins = instrlist_first_app(bb); ins != NULL; ins = instr_get_next_app(ins)) {
+            if (instr_is_scatter(ins) || instr_is_gather(ins)) {
+                int base_regno;
+                opnd_t opnd;
+
+                if (instr_is_scatter(ins)) {
+                    for (int i = 0; i < instr_num_dsts(ins); i++) {
+                        opnd = instr_get_dst(ins, i);
+                        if (opnd_is_base_disp(opnd)) {
+                            break;
+                        }
+                    }
+                } else if (instr_is_gather(ins)) {
+                    for (int i = 0; i < instr_num_srcs(ins); i++) {
+                        opnd = instr_get_src(ins, i);
+                        if (opnd_is_base_disp(opnd)) {
+                            break;
+                        }
+                    }
                 }
-                patt_idx += 1;
-                if (patt_idx >= patt_per) {
-                    patt_idx = 0;
-                    last_complete_patt_idx = i+1;
-                }
-            }
-            if (last_complete_patt_idx - patt_per > max_patt_len) { //need to subtract pattern_per since it will always match itself
-                max_patt_len = last_complete_patt_idx;
-                max_patt_len_per = patt_per;
-            }
-        }
+                base_regno = opnd_get_base(opnd);
 
-        if (max_patt_len_per > 0) {
-            DR_ASSERT(patt.base_delta_patt_num_elem == 0);
-            for (int i = 0; i < max_patt_len_per; i++) {
-                patt.base_delta_patt.at(i) = patt.base_delta_queue.at(i);
+                dr_insert_clean_call(drcontext, bb, ins, (void *)read_instr_reg_state, false, 2, OPND_CREATE_INTPTR(instr_get_app_pc(ins)), OPND_CREATE_INT32(base_regno));
             }
-            patt.base_delta_patt_num_elem = max_patt_len_per;
         }
     }
-    
-
-    // consume as many patterns as possible
-    if (patt.base_delta_patt_num_elem > 0) {
-        int last_full_match_idx = -1;
-        for (int i = 0; i < patt.base_delta_queue_num_elem; i++) {
-            int base_delta_patt_idx = i % patt.base_delta_patt_num_elem; 
-            if (patt.base_delta_queue.at(i) != patt.base_delta_patt.at(base_delta_patt_idx)) {
-                break;
-            }
-            if (base_delta_patt_idx == patt.base_delta_patt_num_elem - 1) {
-                last_full_match_idx = i+1;
-                patt.num_occ += 1;
-            }
-        }
-
-        if (last_full_match_idx != -1) {
-            for (int i = 0; i < patt.base_delta_queue_num_elem - last_full_match_idx; i++) {
-                patt.base_delta_queue.at(i) = patt.base_delta_queue.at(i + last_full_match_idx);
-            }
-            patt.base_delta_queue_num_elem = patt.base_delta_queue_num_elem - last_full_match_idx;
-        }
-        
-        DR_ASSERT(use_existing_pattern || last_full_match_idx != -1);
-        DR_ASSERT(use_existing_pattern || patt.num_occ > 0);
-        return true;
-    } else {
-        // if no pattern was found, pop first delta
-        return false;
-    }
-
-}
-
-static void print_pattern(PatternStruct &patt, bool is_write) {
-#ifdef PRINT_PATTERN
-    if (patt.base_delta_patt_num_elem > 0 && patt.num_occ >= MIN_NUM_OCC) {
-        dr_mutex_lock(print_pattern_mutex);
-        cout << (is_write ? "scatter" : "gather") << endl;
-        cout << "index pattern:" << endl;
-        for (int i = 0; i < patt.index_patt_num_elem; i++) {
-            cout << patt.index_patt.at(i) << "\t";
-        }
-        cout << endl;
-        cout << "base deltas: " << endl;
-        for (int i = 0; i < patt.base_delta_patt_num_elem; i++) {
-            cout << patt.base_delta_patt.at(i)<< "\t";
-        }
-        cout << endl;
-        cout << "num occurrences: " << patt.num_occ << endl;
-        cout << endl << endl;
-
-        dr_mutex_unlock(print_pattern_mutex); 
-    }
-#endif
-}
-
-// Records a given pattern within the global count map
-// Also resets the index and base pattern.
-// For correctness, this method should only be called at the end of the pattern
-// Ie, there has been a base or index mismatch.
-static void record_pattern_occurrence(PatternStruct &patt, bool is_write) {
-    if (patt.base_delta_patt_num_elem > 0 && patt.num_occ >= MIN_NUM_OCC) {
-        vector<ptrdiff_t> index_patt_vec;
-        for (int i = 0; i < patt.index_patt_num_elem; i++) {
-            index_patt_vec.push_back(patt.index_patt.at(i));
-        }
-        vector<ptrdiff_t> base_delta_patt_vec;
-        for (int i = 0; i < patt.base_delta_patt_num_elem; i++) {
-            base_delta_patt_vec.push_back(patt.base_delta_patt.at(i));
-        }
-        dr_mutex_lock(count_mutex);
-        pattern_count[is_write][index_patt_vec][base_delta_patt_vec].push_back(patt.num_occ);
-        dr_mutex_unlock(count_mutex);
-    }
-}
-
-// soft reset
-// will keep queue
-static void record_and_print_pattern_occurrence(PatternStruct &patt, bool is_write) {
-    record_pattern_occurrence(patt, is_write);
-    print_pattern(patt, is_write);
-
-    patt.base_delta_patt_num_elem = 0;
-    patt.base_delta_patt.fill(1337);
-    patt.num_occ = 0;
-    patt.no_prev_base = true;
-}
-
-// hard reset
-// will clear base pattern, index pattern and queue
-static void record_and_print_remaining_pattern_occurrences(PatternStruct &patt, bool is_write) {
-    // finish matching any remaining instructions of the current pattern
-    match_base_delta_pattern(patt, true);
-    record_and_print_pattern_occurrence(patt, is_write);
-
-    while (patt.base_delta_queue_num_elem > 0) {
-        if (!match_base_delta_pattern(patt, false)) {
-            for (int i = 0; i < patt.base_delta_queue_num_elem - 1; i++) {
-                patt.base_delta_queue.at(i) = patt.base_delta_queue.at(i+1);
-            }
-            patt.base_delta_queue_num_elem -= 1;
-        } else {
-            record_and_print_pattern_occurrence(patt, is_write);
-        }
-    }
-
-    patt.index_patt_num_elem = 0;
-    patt.index_patt.fill(1337);
-    patt.no_index_patt = true;
+    return DR_EMIT_DEFAULT;
 }
 
 static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
@@ -422,21 +343,151 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
     instr_free(drcontext, &instr);
 }
 
-static void event_thread_init(void *drcontext) {
-    per_thread_t *data = (per_thread_t *)dr_thread_alloc(drcontext, sizeof(per_thread_t));
-    drmgr_set_tls_field(drcontext, tls_idx, data);
-    data->pattern_map[false].base_delta_patt_num_elem = 0;
-    data->pattern_map[false].index_patt_num_elem = 0;
-    data->pattern_map[false].num_occ = 0;
-    data->pattern_map[false].no_prev_base = true;
-    data->pattern_map[false].no_index_patt = true;
-    data->pattern_map[true].base_delta_patt_num_elem = 0;
-    data->pattern_map[true].index_patt_num_elem = 0;
-    data->pattern_map[true].num_occ = 0;
-    data->pattern_map[true].no_prev_base = true;
-    data->pattern_map[true].no_index_patt = true;
+static bool match_base_delta_pattern(PatternStruct &patt, bool use_existing_pattern) {
+    if (!use_existing_pattern) {
+        patt.base_delta_patt_num_elem = 0;
+        for (int i = 0; i < patt.base_delta_patt.max_size(); i++) {
+            patt.base_delta_patt.at(i) = 1337;
+        }
 
-    cout << "thread init " << dr_get_thread_id(drcontext) << endl;
+        int max_patt_len = 1;
+        int max_patt_len_per = -1;
+        for (int patt_per = 1; patt_per <= MAX_BASE_DELTA_PATTERN_PERIOD; patt_per++) {
+            int patt_idx = 0;
+            int last_complete_patt_idx = -1;
+            for (int i = 0; i < patt.base_delta_queue_num_elem; i++) {
+                if (patt.base_delta_queue.at(patt_idx) != patt.base_delta_queue.at(i)) {
+                    break;
+                }
+                patt_idx += 1;
+                if (patt_idx >= patt_per) {
+                    patt_idx = 0;
+                    last_complete_patt_idx = i+1;
+                }
+            }
+            if (last_complete_patt_idx - patt_per > max_patt_len) { //need to subtract pattern_per since it will always match itself
+                max_patt_len = last_complete_patt_idx;
+                max_patt_len_per = patt_per;
+            }
+        }
+
+        if (max_patt_len_per > 0) {
+            DR_ASSERT(patt.base_delta_patt_num_elem == 0);
+            for (int i = 0; i < max_patt_len_per; i++) {
+                patt.base_delta_patt.at(i) = patt.base_delta_queue.at(i);
+            }
+            patt.base_delta_patt_num_elem = max_patt_len_per;
+        }
+    }
+    
+
+    // consume as many patterns as possible
+    if (patt.base_delta_patt_num_elem > 0) {
+        int last_full_match_idx = -1;
+        for (int i = 0; i < patt.base_delta_queue_num_elem; i++) {
+            int base_delta_patt_idx = i % patt.base_delta_patt_num_elem; 
+            if (patt.base_delta_queue.at(i) != patt.base_delta_patt.at(base_delta_patt_idx)) {
+                break;
+            }
+            if (base_delta_patt_idx == patt.base_delta_patt_num_elem - 1) {
+                last_full_match_idx = i+1;
+                patt.num_occ += 1;
+            }
+        }
+
+        if (last_full_match_idx != -1) {
+            for (int i = 0; i < patt.base_delta_queue_num_elem - last_full_match_idx; i++) {
+                patt.base_delta_queue.at(i) = patt.base_delta_queue.at(i + last_full_match_idx);
+            }
+            patt.base_delta_queue_num_elem = patt.base_delta_queue_num_elem - last_full_match_idx;
+        }
+        
+        DR_ASSERT(use_existing_pattern || last_full_match_idx != -1);
+        DR_ASSERT(use_existing_pattern || patt.num_occ > 0);
+        return true;
+    } else {
+        // if no pattern was found, pop first delta
+        return false;
+    }
+
+}
+
+// hard reset
+// will clear base pattern, index pattern and queue
+static void record_and_print_remaining_pattern_occurrences(PatternStruct &patt, bool is_write) {
+    // finish matching any remaining instructions of the current pattern
+    match_base_delta_pattern(patt, true);
+    record_and_print_pattern_occurrence(patt, is_write);
+
+    while (patt.base_delta_queue_num_elem > 0) {
+        if (!match_base_delta_pattern(patt, false)) {
+            for (int i = 0; i < patt.base_delta_queue_num_elem - 1; i++) {
+                patt.base_delta_queue.at(i) = patt.base_delta_queue.at(i+1);
+            }
+            patt.base_delta_queue_num_elem -= 1;
+        } else {
+            record_and_print_pattern_occurrence(patt, is_write);
+        }
+    }
+
+    patt.index_patt_num_elem = 0;
+    patt.index_patt.fill(1337);
+    patt.no_index_patt = true;
+}
+
+// soft reset
+// will keep queue
+static void record_and_print_pattern_occurrence(PatternStruct &patt, bool is_write) {
+    record_pattern_occurrence(patt, is_write);
+    print_pattern(patt, is_write);
+
+    patt.base_delta_patt_num_elem = 0;
+    patt.base_delta_patt.fill(1337);
+    patt.num_occ = 0;
+    patt.no_prev_base = true;
+}
+
+// Records a given pattern within the global count map
+// Also resets the index and base pattern.
+// For correctness, this method should only be called at the end of the pattern
+// Ie, there has been a base or index mismatch.
+static void record_pattern_occurrence(PatternStruct &patt, bool is_write) {
+    if (patt.base_delta_patt_num_elem > 0 && patt.num_occ >= MIN_NUM_OCC) {
+        vector<ptrdiff_t> index_patt_vec;
+        for (int i = 0; i < patt.index_patt_num_elem; i++) {
+            index_patt_vec.push_back(patt.index_patt.at(i));
+        }
+        vector<ptrdiff_t> base_delta_patt_vec;
+        for (int i = 0; i < patt.base_delta_patt_num_elem; i++) {
+            base_delta_patt_vec.push_back(patt.base_delta_patt.at(i));
+        }
+        dr_mutex_lock(count_mutex);
+        pattern_count[is_write][index_patt_vec][base_delta_patt_vec].push_back(patt.num_occ);
+        dr_mutex_unlock(count_mutex);
+    }
+}
+
+static void print_pattern(PatternStruct &patt, bool is_write) {
+#ifdef PRINT_PATTERN
+    if (patt.base_delta_patt_num_elem > 0 && patt.num_occ >= MIN_NUM_OCC) {
+        dr_mutex_lock(print_pattern_mutex);
+        cout << (is_write ? "scatter" : "gather") << endl;
+        cout << "index pattern:" << endl;
+        for (int i = 0; i < patt.index_patt_num_elem; i++) {
+            cout << patt.index_patt.at(i) << "\t";
+        }
+        cout << endl;
+        cout << "base deltas: " << endl;
+        for (int i = 0; i < patt.base_delta_patt_num_elem; i++) {
+            cout << patt.base_delta_patt.at(i)<< "\t";
+        }
+        cout << endl;
+        cout << "num occurrences: " << patt.num_occ << endl;
+        cout << endl << endl;
+
+        dr_mutex_unlock(print_pattern_mutex); 
+    }
+#endif
 }
 
 static void event_thread_exit(void *drcontext) {
@@ -500,49 +551,4 @@ static void event_exit(void) {
 #endif
     drx_exit();
     drmgr_exit();
-}
-
-/* This is called separately for each instruction in the block. */
-static dr_emit_flags_t event_app_instruction(void *drcontext, void *tag, instrlist_t *bb,
-                                            instr_t *instr, bool for_trace, bool translating,
-                                            void *user_data) {
-    drmgr_disable_auto_predication(drcontext, bb);
-    if (drmgr_is_first_instr(drcontext, instr)) {
-        instr_t *ins;
-
-        /* Normally looking ahead should be performed in the analysis event, but
-         * here that would require storing the counts into an array passed in
-         * user_data.  We avoid that overhead by cheating drmgr's model a little
-         * bit and looking forward.  An alternative approach would be to insert
-         * each counter before its respective instruction and have an
-         * instru2instru pass that pulls the increments together to reduce
-         * overhead.
-         */
-        for (ins = instrlist_first_app(bb); ins != NULL; ins = instr_get_next_app(ins)) {
-            if (instr_is_scatter(ins) || instr_is_gather(ins)) {
-                int base_regno;
-                opnd_t opnd;
-
-                if (instr_is_scatter(ins)) {
-                    for (int i = 0; i < instr_num_dsts(ins); i++) {
-                        opnd = instr_get_dst(ins, i);
-                        if (opnd_is_base_disp(opnd)) {
-                            break;
-                        }
-                    }
-                } else if (instr_is_gather(ins)) {
-                    for (int i = 0; i < instr_num_srcs(ins); i++) {
-                        opnd = instr_get_src(ins, i);
-                        if (opnd_is_base_disp(opnd)) {
-                            break;
-                        }
-                    }
-                }
-                base_regno = opnd_get_base(opnd);
-
-                dr_insert_clean_call(drcontext, bb, ins, (void *)read_instr_reg_state, false, 2, OPND_CREATE_INTPTR(instr_get_app_pc(ins)), OPND_CREATE_INT32(base_regno));
-            }
-        }
-    }
-    return DR_EMIT_DEFAULT;
 }
