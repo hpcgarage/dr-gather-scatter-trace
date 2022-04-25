@@ -495,6 +495,9 @@ static void event_exit(void) {
         DR_ASSERT(false);
     }
     dr_mutex_destroy(count_mutex);
+#ifdef PRINT_PATTERN
+    dr_mutex_destroy(print_pattern_mutex);
+#endif
     drx_exit();
     drmgr_exit();
 }
