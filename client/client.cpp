@@ -502,41 +502,62 @@ static void event_thread_exit(void *drcontext) {
 }
 
 static void event_exit(void) {
+    set<unsigned long long> total_num_occ_set;
+    unordered_map<unsigned long long, vector<string>> total_num_occ_to_output_string_vec_map;
+
     for (const auto& is_write_elem : pattern_count) {
         for (const auto& index_patt_elem : is_write_elem.second) {
             for (const auto& base_delta_patt_elem : index_patt_elem.second) {
-                cout << (is_write_elem.first ? "scatter" : "gather") << endl;
-                cout << "index patt" << endl;
+                string output_string = "";
+
+                output_string += (is_write_elem.first ? "scatter\n" : "gather\n");
+                output_string += "index patt\n";
                 for (int i = 0; i < index_patt_elem.first.size(); i++) {
-                    cout << ((unsigned long long) index_patt_elem.first[i]) << "\t";
+                    output_string += to_string(((unsigned long long) index_patt_elem.first[i])) + "\t";
                 }
                 if (index_patt_elem.first.size() == 0) {
-                    cout << "EMPTY";
+                    output_string += "EMPTY";
                 }
-                cout << endl;
-                cout << "base deltas" << endl;
+                output_string += "\nbase deltas\n";
                 for (int i = 0; i < base_delta_patt_elem.first.size(); i++) {
-                    cout << ((unsigned long long) base_delta_patt_elem.first[i]) << "\t";
+                    output_string += to_string(((unsigned long long) base_delta_patt_elem.first[i])) + "\t";
                 }
                 if (base_delta_patt_elem.first.size() == 0) {
-                    cout << "EMPTY";
+                    output_string += "EMPTY";
                 }
-                cout << endl;
-                cout << "occurrences" << endl;
-#ifdef PRINT_ALL_OCC_FINAL
+                output_string +=  "\noccurrences\n";
+
+                unsigned long long total_num_occ = 0;
+
                 for (int i = 0; i < base_delta_patt_elem.second.size(); i++) {
-                    cout << base_delta_patt_elem.second[i] << "\t";
-                }
+#ifdef PRINT_ALL_OCC_FINAL
+                    output_string += to_string(base_delta_patt_elem.second[i]) + "\t";
 #else
-                for (int i = 0; i < min(static_cast<std::deque<long long unsigned int>::size_type>(100), base_delta_patt_elem.second.size()); i++) {
-                    cout << base_delta_patt_elem.second[i] << "\t";
+                    if (i < 100) {
+                        output_string += to_string(base_delta_patt_elem.second[i]) + "\t";
+                    }
+#endif
+                    total_num_occ += base_delta_patt_elem.second[i];
                 }
+
+#ifndef PRINT_ALL_OCC_FINAL
                 if (base_delta_patt_elem.second.size() > 100) {
-                    cout << endl << "[output truncated]" << endl;
+                    output_string += "\n[output truncated]\n";
                 }
 #endif
-                cout << endl << endl;
+                output_string += "\ntotal number of occurrences:\n" + to_string(total_num_occ) + "\n\n\n";
+
+                total_num_occ_set.insert(total_num_occ);
+                total_num_occ_to_output_string_vec_map[total_num_occ].push_back(output_string);
             }
+        }
+    }
+
+    vector<unsigned long long> total_num_occ_arr(total_num_occ_set.begin(), total_num_occ_set.end());
+    sort(total_num_occ_arr.begin(), total_num_occ_arr.end(), greater<unsigned long long>());
+    for (auto total_num_occ : total_num_occ_arr) {
+        for (auto total_num_occ_output_string : total_num_occ_to_output_string_vec_map[total_num_occ]) {
+            cout << total_num_occ_output_string;
         }
     }
     
