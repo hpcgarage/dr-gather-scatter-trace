@@ -14,8 +14,8 @@ add_library(gs_count_client SHARED client.c client_tools.h avx512ctx-shared.h de
 #set(DynamoRIO_FAST_IR ON)
 configure_DynamoRIO_client(gs_count_client)
 
-use_DynamoRIO_extension(count_client drmgr)
-use_DynamoRIO_extension(count_client drreg)
-use_DynamoRIO_extension(count_client drutil)
-use_DynamoRIO_extension(count_client drx)
-use_DynamoRIO_extension(count_client droption)
+use_DynamoRIO_extension(gs_count_client drmgr)
+use_DynamoRIO_extension(gs_count_client drreg)
+use_DynamoRIO_extension(gs_count_client drutil)
+use_DynamoRIO_extension(gs_count_client drx)
+use_DynamoRIO_extension(gs_count_client droption)
