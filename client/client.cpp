@@ -52,6 +52,7 @@
 using namespace std;
 
 // print information about every gather/scatter operation encountered
+
 // #define PRINT_ALL_OCC
 
 // print information about patterns as they are discovered
@@ -60,7 +61,6 @@ using namespace std;
 // print all occurrences of all patterns
 // otherwise, occurrences of each pattern are truncated to the first 100
 // #define PRINT_ALL_OCC_FINAL
-
 
 // minimum number of occurrences of a pattern to print
 #define MIN_NUM_OCC 1
@@ -239,6 +239,7 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
     uint index_queue_num_elem = 0;
     bool is_write;
 
+
 #ifdef PRINT_ALL_OCC
     cout << "opcode: " << decode_opcode_name(instr_get_opcode(&instr)) << endl;
     cout << "base: " << (unsigned long long) base << endl;
@@ -249,6 +250,7 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
     while (instr_compute_address_ex(&instr, &mcontext, index_queue_num_elem, &idx, &is_write)) {
         index_queue.at(index_queue_num_elem) = idx - base;
         index_queue_num_elem += 1;
+
 
 #ifdef PRINT_ALL_OCC
         cout << (unsigned long long) (idx - base) << "\t";
