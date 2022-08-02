@@ -33,8 +33,8 @@
 #include "dr_api.h"
 #include "drmgr.h"
 #include "drx.h"
-#include "client_tools.h"
-#include "avx512ctx-shared.h"
+//#include "client_tools.h"
+//#include "avx512ctx-shared.h"
 #include <bits/stdc++.h>
 #include <stdlib.h> /* qsort */
 #include <string.h>
