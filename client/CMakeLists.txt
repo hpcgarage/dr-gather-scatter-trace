@@ -10,7 +10,7 @@ if (NOT DynamoRIO_FOUND)
 	message(FATAL_ERROR "fatal: could not find dynamorio")
 endif()
 
-add_library(count_client SHARED client.cpp)
+add_library(gsclient SHARED client.cpp)
 
 #set(DynamoRIO_FAST_IR ON)
 configure_DynamoRIO_client(gsclient)
