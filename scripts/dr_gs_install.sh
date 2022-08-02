@@ -6,7 +6,8 @@
 # Last updated: 8/1/2022
 
 #DynamoRIO build - the minimum tested version is 8.0.18895 from 2021
-DR_VERSION=9.0.19195
+#DR_VERSION=9.0.19195
+DR_VERSION=8.0.18895
 
 #Specify the top-level directory for the gather/scatter tool - we assume this script is run from that repo.
 DR_GS_HOME=$PWD
@@ -41,10 +42,11 @@ build_dr_gs_client()
 	cd $PROJ_HOME
 	
 	set -x
-	git clone https://github.com/hpcgarage/dr-gather-scatter-trace.git
-	cd dr-gather-scatter-trace
-	cd client/
-	mkdir -p build && cd build
+	#git clone https://github.com/hpcgarage/dr-gather-scatter-trace.git
+	#cd dr-gather-scatter-trace
+	cp -rf ../client .
+	cd client
+	mkdir -p client_build && cd client_build
 	
 	cmake -DDynamoRIO_DIR=${DYNAMORIO_ROOT}/cmake/ ..
 	make -j
@@ -62,14 +64,17 @@ test_spatter_client()
 	#git checkout dynamorio_integration
 
 	#chmod a+rx configure/configure_omp_intel_dynamorio
-	#./configure/configure_omp_intel_dynamorio
+	./configure/configure_omp_intel_dynamorio
 	
 	cd build_omp_intel_dynamorio
-	#make -j
+	make -j
 
-	#Run a simple Spatter test
+	#Run a simple Spatter test with two threads - you can tweak this to run with different thread counts
+	NUM_THREADS=1
+	export OMP_NUM_THREADS=$NUM_THREADS
+
 	set -x
-	${DYNAMORIO_ROOT}/bin64/drrun -noinject -c $DR_GS_CLIENT -- ./spatter -pUNIFORM:8:1 -t1
+	${DYNAMORIO_ROOT}/bin64/drrun -noinject -c $DR_GS_CLIENT -- ./spatter -pUNIFORM:8:1 -t${NUM_THREADS}
 	set -x
 }
 
@@ -77,7 +82,8 @@ test_spatter_client()
 set_env()
 {
 	export DYNAMORIO_ROOT=${PROJ_HOME}/DynamoRIO-Linux-${DR_VERSION}/	
-	export DR_GS_CLIENT=${PROJ_HOME}/dr-gather-scatter-trace/client/build/libgsclient.so	
+	export DR_GS_CLIENT=${PROJ_HOME}/client/client_build/libgsclient.so
+	export PATH=$PATH:${DYNAMORIO_ROOT}/bin64/	
 }
 
 clean_up()
@@ -93,6 +99,6 @@ mkdir -p $PROJ_HOME
 set_env
 
 #setup_dr
-#build_dr_gs_client
+build_dr_gs_client
 test_spatter_client
 
