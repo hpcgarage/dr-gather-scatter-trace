@@ -33,6 +33,8 @@
 #include "dr_api.h"
 #include "drmgr.h"
 #include "drx.h"
+//#include "client_tools.h"
+//#include "avx512ctx-shared.h"
 #include <bits/stdc++.h>
 #include <stdlib.h> /* qsort */
 #include <string.h>
@@ -50,7 +52,8 @@
 using namespace std;
 
 // print information about every gather/scatter operation encountered
-// #define PRINT_ALL_INSTR
+
+// #define PRINT_ALL_OCC
 
 // print information about patterns as they are discovered
 // #define PRINT_PATTERN
@@ -59,7 +62,7 @@ using namespace std;
 // otherwise, occurrences of each pattern are truncated to the first 100
 // #define PRINT_ALL_OCC_FINAL
 
-// minimum number of occurrences of a pattern to record/print
+// minimum number of occurrences of a pattern to print
 #define MIN_NUM_OCC 1
 
 // Required: MAX_BASE_DELTA_PATTERN_QUEUE > 2 * MAX_BASE_DELTA_PATTERN_PERIOD
@@ -125,6 +128,7 @@ static void *print_pattern_mutex;
 DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     if (!drmgr_init())
         DR_ASSERT(false);
+    drx_init();
 
     /* Register events: */
     dr_register_exit_event(event_exit);
@@ -150,11 +154,13 @@ static void event_thread_init(void *drcontext) {
     per_thread_t *data = (per_thread_t *)dr_thread_alloc(drcontext, sizeof(per_thread_t));
     drmgr_set_tls_field(drcontext, tls_idx, data);
     data->pattern_map[false].base_delta_patt_num_elem = 0;
+    data->pattern_map[false].base_delta_queue_num_elem = 0;
     data->pattern_map[false].index_patt_num_elem = 0;
     data->pattern_map[false].num_occ = 0;
     data->pattern_map[false].no_prev_base = true;
     data->pattern_map[false].no_index_patt = true;
     data->pattern_map[true].base_delta_patt_num_elem = 0;
+    data->pattern_map[true].base_delta_queue_num_elem = 0;
     data->pattern_map[true].index_patt_num_elem = 0;
     data->pattern_map[true].num_occ = 0;
     data->pattern_map[true].no_prev_base = true;
@@ -235,7 +241,8 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
     uint index_queue_num_elem = 0;
     bool is_write;
 
-#ifdef PRINT_ALL_INSTR
+
+#ifdef PRINT_ALL_OCC
     cout << "opcode: " << decode_opcode_name(instr_get_opcode(&instr)) << endl;
     cout << "base: " << (unsigned long long) base << endl;
     cout << "indicies: ";
@@ -246,11 +253,12 @@ static void read_instr_reg_state(app_pc instr_addr, int base_regno) {
         index_queue.at(index_queue_num_elem) = idx - base;
         index_queue_num_elem += 1;
 
-#ifdef PRINT_ALL_INSTR
+
+#ifdef PRINT_ALL_OCC
         cout << (unsigned long long) (idx - base) << "\t";
 #endif
     }
-#ifdef PRINT_ALL_INSTR
+#ifdef PRINT_ALL_OCC
     cout << endl << endl;
 #endif
 

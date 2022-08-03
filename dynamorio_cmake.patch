@@ -23,12 +23,12 @@
  
    if (DEFINED DynamoRIO_RPATH)
      set(use_rpath ${DynamoRIO_RPATH})
-@@ -1487,7 +1487,7 @@
+@@ -1498,7 +1498,7 @@
    endif ()
  
    if (NOT DynamoRIO_EXT_${extname}_NOLIB)
--	  target_link_libraries(${target} ${extname})
-+	  target_link_libraries(${target} LINK_PUBLIC ${extname})
+-    target_link_libraries(${target} ${extname})
++    target_link_libraries(${target} LINK_PUBLIC ${extname})
    endif (NOT DynamoRIO_EXT_${extname}_NOLIB)
  
    if ("${extname}" MATCHES "^droption$")

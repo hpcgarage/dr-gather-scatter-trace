@@ -11,6 +11,7 @@ if (NOT DynamoRIO_FOUND)
 endif()
 
 add_library(gsclient SHARED client.cpp)
+
 #set(DynamoRIO_FAST_IR ON)
 configure_DynamoRIO_client(gsclient)
 
