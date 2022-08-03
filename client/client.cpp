@@ -154,11 +154,13 @@ static void event_thread_init(void *drcontext) {
     per_thread_t *data = (per_thread_t *)dr_thread_alloc(drcontext, sizeof(per_thread_t));
     drmgr_set_tls_field(drcontext, tls_idx, data);
     data->pattern_map[false].base_delta_patt_num_elem = 0;
+    data->pattern_map[false].base_delta_queue_num_elem = 0;
     data->pattern_map[false].index_patt_num_elem = 0;
     data->pattern_map[false].num_occ = 0;
     data->pattern_map[false].no_prev_base = true;
     data->pattern_map[false].no_index_patt = true;
     data->pattern_map[true].base_delta_patt_num_elem = 0;
+    data->pattern_map[true].base_delta_queue_num_elem = 0;
     data->pattern_map[true].index_patt_num_elem = 0;
     data->pattern_map[true].num_occ = 0;
     data->pattern_map[true].no_prev_base = true;
